@@ -1,12 +1,16 @@
 package observability
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -59,4 +63,54 @@ func TestHTTPMiddlewareGeneratesRequestID(t *testing.T) {
 	if res.Header().Get("X-Request-ID") == "" || res.Header().Get("X-Correlation-ID") == "" {
 		t.Fatal("generated IDs were not returned")
 	}
+}
+
+func TestHTTPMiddlewarePreservesOptionalResponseWriterInterfaces(t *testing.T) {
+	writer := &optionalResponseWriter{ResponseRecorder: httptest.NewRecorder()}
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if _, ok := w.(http.Hijacker); !ok {
+			t.Fatal("http.Hijacker was not preserved")
+		}
+		if _, _, err := w.(http.Hijacker).Hijack(); err != nil {
+			t.Fatalf("hijack: %v", err)
+		}
+		w.(http.Flusher).Flush()
+		if err := w.(http.Pusher).Push("/asset", nil); err != nil {
+			t.Fatalf("push: %v", err)
+		}
+		if _, err := w.(io.ReaderFrom).ReadFrom(strings.NewReader("body")); err != nil {
+			t.Fatalf("read from: %v", err)
+		}
+	})
+
+	Middleware(slog.Default())(handler).ServeHTTP(writer, httptest.NewRequest(http.MethodGet, "/", nil))
+	if !writer.hijacked || !writer.flushed || !writer.pushed {
+		t.Fatalf("optional interfaces were not delegated: %#v", writer)
+	}
+}
+
+type optionalResponseWriter struct {
+	*httptest.ResponseRecorder
+	hijacked bool
+	flushed  bool
+	pushed   bool
+}
+
+func (w *optionalResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	w.hijacked = true
+	return nil, nil, nil
+}
+
+func (w *optionalResponseWriter) Flush() {
+	w.flushed = true
+	w.ResponseRecorder.Flush()
+}
+
+func (w *optionalResponseWriter) Push(string, *http.PushOptions) error {
+	w.pushed = true
+	return nil
+}
+
+func (w *optionalResponseWriter) ReadFrom(r io.Reader) (int64, error) {
+	return io.Copy(w.ResponseRecorder, r)
 }

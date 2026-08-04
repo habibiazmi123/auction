@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/example/auction/packages/contracts"
@@ -50,11 +51,15 @@ type claims struct {
 }
 
 var (
-	ErrInvalidToken     = errors.New("invalid token")
-	ErrInvalidPrincipal = errors.New("invalid principal")
+	ErrInvalidToken       = errors.New("invalid token")
+	ErrInvalidPrincipal   = errors.New("invalid principal")
+	ErrInvalidTokenConfig = errors.New("invalid token configuration")
 )
 
-func NewTokenService(cfg TokenConfig) *JWTService {
+func NewTokenService(cfg TokenConfig) (*JWTService, error) {
+	if strings.TrimSpace(cfg.Secret) == "" {
+		return nil, fmt.Errorf("%w: JWT secret is empty", ErrInvalidTokenConfig)
+	}
 	if cfg.Issuer == "" {
 		cfg.Issuer = "auction"
 	}
@@ -67,10 +72,10 @@ func NewTokenService(cfg TokenConfig) *JWTService {
 	if cfg.RefreshTTL == 0 {
 		cfg.RefreshTTL = 30 * 24 * time.Hour
 	}
-	return &JWTService{secret: []byte(cfg.Secret), issuer: cfg.Issuer, audience: cfg.Audience, accessTTL: cfg.AccessTTL, refreshTTL: cfg.RefreshTTL}
+	return &JWTService{secret: []byte(cfg.Secret), issuer: cfg.Issuer, audience: cfg.Audience, accessTTL: cfg.AccessTTL, refreshTTL: cfg.RefreshTTL}, nil
 }
 
-func NewJWTService(secret, issuer, audience string) *JWTService {
+func NewJWTService(secret, issuer, audience string) (*JWTService, error) {
 	return NewTokenService(TokenConfig{Secret: secret, Issuer: issuer, Audience: audience})
 }
 
@@ -117,7 +122,7 @@ func (s *JWTService) Verify(ctx context.Context, token string) (Principal, error
 			return nil, ErrInvalidToken
 		}
 		return s.secret, nil
-	}, jwt.WithIssuer(s.issuer), jwt.WithAudience(s.audience), jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}))
+	}, jwt.WithIssuer(s.issuer), jwt.WithAudience(s.audience), jwt.WithExpirationRequired(), jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}))
 	if err != nil {
 		return Principal{}, fmt.Errorf("%w: %v", ErrInvalidToken, err)
 	}
