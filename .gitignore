@@ -1,0 +1,4 @@
+.worktrees/
+.env
+bin/
+coverage/
