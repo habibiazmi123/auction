@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -12,8 +14,11 @@ import (
 
 	"github.com/example/auction/packages/auth"
 	"github.com/example/auction/packages/config"
+	"github.com/example/auction/packages/contracts"
+	"github.com/example/auction/packages/kafka"
 	"github.com/example/auction/packages/observability"
 	"github.com/example/auction/packages/postgres"
+	kafkago "github.com/segmentio/kafka-go"
 )
 
 func main() {
@@ -59,7 +64,56 @@ func main() {
 		productURL = "http://localhost:8082"
 	}
 	products := NewHTTPProductClient(productURL, credential, &http.Client{Timeout: 5 * time.Second})
-	service := NewAuctionService(NewRepository(pool), products)
+	repository := NewRepository(pool)
+	service := NewAuctionService(repository, products)
+
+	producer := kafka.NewProducer(kafka.ProducerConfig{Brokers: cfg.KafkaBrokers})
+	defer producer.Close()
+
+	relay := NewOutboxRelay(pool, producer)
+	go func() {
+		if err := relay.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			slog.Error("outbox relay stopped", "error", err)
+		}
+	}()
+
+	processor := NewBidProcessor(repository)
+	consumer := kafka.NewConsumer(kafka.ConsumerConfig{
+		Brokers:     cfg.KafkaBrokers,
+		Topic:       "auction.bid.commands.v1",
+		GroupID:     "auction-service-bid-processors",
+		StartOffset: kafkago.FirstOffset,
+	})
+	defer consumer.Close()
+	go func() {
+		if err := consumer.Run(ctx, func(ctx context.Context, message kafka.Message) error {
+			var command contracts.BidCommand
+			if err := json.Unmarshal(message.Payload, &command); err != nil {
+				slog.WarnContext(ctx, "drop malformed bid command", "error", err)
+				return nil
+			}
+			return processor.Handle(ctx, command)
+		}); err != nil && !errors.Is(err, context.Canceled) {
+			slog.Error("bid consumer stopped", "error", err)
+		}
+	}()
+
+	closer := NewAuctionCloser(repository)
+	go func() {
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if _, err := closer.CloseDue(ctx, time.Now().UTC()); err != nil {
+					slog.Error("close due run failed", "error", err)
+				}
+			}
+		}
+	}()
+
 	server := &http.Server{Addr: fmt.Sprintf(":%d", servicePort(cfg)), Handler: observability.Middleware(slog.Default())(NewHandler(service, tokens))}
 	slog.Info("auction service listening", "addr", server.Addr)
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {

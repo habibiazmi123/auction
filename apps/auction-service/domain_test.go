@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/example/auction/packages/contracts"
 	"github.com/google/uuid"
 )
 
@@ -169,6 +170,86 @@ func TestAuctionServiceValidatesSnapshotBeforeLock(t *testing.T) {
 	}
 }
 
+func TestBidResultAcceptsFirstBid(t *testing.T) {
+	now := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
+	auction := liveAuction(now, uuid.New())
+	updated, err := (AuctionRules{}).ApplyBid(auction, uuid.New(), auction.StartingPriceCents, now)
+	if err != nil || updated.CurrentPriceCents != auction.StartingPriceCents || updated.CurrentWinnerID == nil {
+		t.Fatalf("first bid: auction=%#v err=%v", updated, err)
+	}
+}
+
+func TestBidResultRejectsBidAfterEnd(t *testing.T) {
+	now := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
+	auction := liveAuction(now, uuid.New())
+	if _, err := (AuctionRules{}).ApplyBid(auction, uuid.New(), auction.StartingPriceCents, auction.EndsAt); !errors.Is(err, ErrAuctionNotLive) {
+		t.Fatalf("expected ErrAuctionNotLive, got %v", err)
+	}
+}
+
+func TestBidResultDuplicateIdempotencyKeyReturnsOriginal(t *testing.T) {
+	repo := newMemoryBidRepository()
+	processor := NewBidProcessor(repo)
+	cmd := contracts.BidCommand{
+		BidID: uuid.NewString(), CommandID: uuid.NewString(), AuctionID: uuid.NewString(),
+		BidderID: uuid.NewString(), AmountCents: 150, IdempotencyKey: "key-1",
+	}
+	if err := processor.Handle(context.Background(), cmd); err != nil {
+		t.Fatalf("first handle: %v", err)
+	}
+	if len(repo.byCommand) != 1 {
+		t.Fatalf("expected one command to be stored, got %d", len(repo.byCommand))
+	}
+	if err := processor.Handle(context.Background(), cmd); err != nil {
+		t.Fatalf("second handle: %v", err)
+	}
+	if len(repo.byCommand) != 1 {
+		t.Fatalf("duplicate should be idempotent, commands=%d", len(repo.byCommand))
+	}
+}
+
+func TestBidResultConflictSameKeyDifferentPayload(t *testing.T) {
+	repo := newMemoryBidRepository()
+	processor := NewBidProcessor(repo)
+	auctionID := uuid.NewString()
+	cmd1 := contracts.BidCommand{
+		BidID: uuid.NewString(), CommandID: uuid.NewString(), AuctionID: auctionID,
+		BidderID: uuid.NewString(), AmountCents: 150, IdempotencyKey: "key-2",
+	}
+	cmd2 := contracts.BidCommand{
+		BidID: uuid.NewString(), CommandID: uuid.NewString(), AuctionID: auctionID,
+		BidderID: uuid.NewString(), AmountCents: 200, IdempotencyKey: "key-2",
+	}
+	if err := processor.Handle(context.Background(), cmd1); err != nil {
+		t.Fatalf("first handle: %v", err)
+	}
+	if err := processor.Handle(context.Background(), cmd2); err != nil {
+		t.Fatalf("second handle should be committed as conflict, got %v", err)
+	}
+	if len(repo.byCommand) != 1 || repo.byCommand[cmd1.CommandID].AmountCents != 150 {
+		t.Fatalf("result should be from first command, got %#v", repo.byCommand)
+	}
+}
+
+func TestBidResultRejectsBidTooLow(t *testing.T) {
+	now := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
+	auction := liveAuction(now, uuid.New())
+	_, err := (AuctionRules{}).ApplyBid(auction, uuid.New(), auction.StartingPriceCents-1, now)
+	if !errors.Is(err, ErrBidTooLow) {
+		t.Fatalf("expected ErrBidTooLow, got %v", err)
+	}
+}
+
+func TestBidResultRejectsSellerBid(t *testing.T) {
+	now := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
+	seller := uuid.New()
+	auction := liveAuction(now, seller)
+	_, err := (AuctionRules{}).ApplyBid(auction, seller, auction.StartingPriceCents, now)
+	if !errors.Is(err, ErrSellerCannotBid) {
+		t.Fatalf("expected ErrSellerCannotBid, got %v", err)
+	}
+}
+
 func TestAuctionServiceUnlocksProductWhenCreatePersistenceFails(t *testing.T) {
 	productID, sellerID := uuid.New(), uuid.New()
 	products := &fakeAuctionProductClient{snapshot: ProductSnapshot{ID: productID, SellerID: sellerID, Name: "camera", Description: "used", Quantity: 1, Status: "available"}}
@@ -200,6 +281,18 @@ func (r *fakeAuctionRepository) Get(context.Context, uuid.UUID) (Auction, error)
 
 func (r *fakeAuctionRepository) Update(context.Context, Auction) error { return nil }
 
+func (r *fakeAuctionRepository) ApplyBidTx(_ context.Context, _ contracts.BidCommand) (BidResult, error) {
+	return BidResult{}, nil
+}
+
+func (r *fakeAuctionRepository) GetBid(_ context.Context, _ uuid.UUID) (Bid, error) {
+	return Bid{}, ErrAuctionNotFound
+}
+
+func (r *fakeAuctionRepository) CloseDue(_ context.Context, _ time.Time) (int, error) {
+	return 0, nil
+}
+
 type fakeAuctionProductClient struct {
 	snapshot    ProductSnapshot
 	lockCalls   int
@@ -219,6 +312,43 @@ func (c *fakeAuctionProductClient) Unlock(context.Context, uuid.UUID, uuid.UUID)
 	c.unlockCalls++
 	return nil
 }
+
+type memoryBidRepository struct {
+	byCommand map[string]BidResult
+	byKey     map[string]string
+}
+
+func newMemoryBidRepository() *memoryBidRepository {
+	return &memoryBidRepository{
+		byCommand: make(map[string]BidResult),
+		byKey:     make(map[string]string),
+	}
+}
+
+func (r *memoryBidRepository) ApplyBidTx(_ context.Context, command contracts.BidCommand) (BidResult, error) {
+	if result, ok := r.byCommand[command.CommandID]; ok {
+		return result, nil
+	}
+	if priorCommandID, ok := r.byKey[command.IdempotencyKey]; ok && priorCommandID != command.CommandID {
+		return BidResult{}, ErrBidIdempotencyConflict
+	}
+	result := BidResult{
+		BidID:       uuid.MustParse(command.BidID),
+		AuctionID:   uuid.MustParse(command.AuctionID),
+		BidderID:    uuid.MustParse(command.BidderID),
+		AmountCents: command.AmountCents,
+		Status:      BidStatusAccepted,
+	}
+	r.byCommand[command.CommandID] = result
+	r.byKey[command.IdempotencyKey] = command.CommandID
+	return result, nil
+}
+
+func (r *memoryBidRepository) Create(_ context.Context, _ Auction) error { return nil }
+func (r *memoryBidRepository) Get(_ context.Context, _ uuid.UUID) (Auction, error) { return Auction{}, nil }
+func (r *memoryBidRepository) Update(_ context.Context, _ Auction) error { return nil }
+func (r *memoryBidRepository) GetBid(_ context.Context, _ uuid.UUID) (Bid, error) { return Bid{}, ErrAuctionNotFound }
+func (r *memoryBidRepository) CloseDue(_ context.Context, _ time.Time) (int, error) { return 0, nil }
 
 func liveAuction(now time.Time, seller uuid.UUID) Auction {
 	return Auction{

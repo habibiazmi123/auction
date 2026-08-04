@@ -14,8 +14,9 @@ import (
 )
 
 type fakeAuctionService struct {
-	create func(context.Context, uuid.UUID, CreateAuctionInput) (Auction, error)
-	get    func(context.Context, uuid.UUID) (AuctionView, error)
+	create  func(context.Context, uuid.UUID, CreateAuctionInput) (Auction, error)
+	get     func(context.Context, uuid.UUID) (AuctionView, error)
+	getBid  func(context.Context, uuid.UUID) (Bid, error)
 }
 
 func (s fakeAuctionService) Create(ctx context.Context, sellerID uuid.UUID, input CreateAuctionInput) (Auction, error) {
@@ -24,6 +25,13 @@ func (s fakeAuctionService) Create(ctx context.Context, sellerID uuid.UUID, inpu
 
 func (s fakeAuctionService) Get(ctx context.Context, auctionID uuid.UUID) (AuctionView, error) {
 	return s.get(ctx, auctionID)
+}
+
+func (s fakeAuctionService) GetBid(ctx context.Context, bidID uuid.UUID) (Bid, error) {
+	if s.getBid != nil {
+		return s.getBid(ctx, bidID)
+	}
+	return Bid{}, ErrAuctionNotFound
 }
 
 func TestAuctionHandlerCreatesAuctionForSeller(t *testing.T) {

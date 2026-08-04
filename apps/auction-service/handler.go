@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/example/auction/packages/auth"
 	"github.com/example/auction/packages/observability"
@@ -54,6 +55,19 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.get(w, r, auctionID)
 		return
 	}
+	if strings.HasPrefix(r.URL.Path, "/v1/bids/") {
+		bidID, ok := bidIDFromPath(r.URL.Path)
+		if !ok {
+			writeProblem(w, r, http.StatusNotFound, "not_found", "bid not found")
+			return
+		}
+		if r.Method != http.MethodGet {
+			writeProblem(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+			return
+		}
+		h.getBid(w, r, bidID)
+		return
+	}
 	writeProblem(w, r, http.StatusNotFound, "not_found", "route not found")
 }
 
@@ -92,6 +106,41 @@ func (h *Handler) get(w http.ResponseWriter, r *http.Request, auctionID uuid.UUI
 	writeJSON(w, http.StatusOK, view)
 }
 
+type bidView struct {
+	ID            string `json:"id"`
+	AuctionID     string `json:"auction_id"`
+	BidderID      string `json:"bidder_id"`
+	AmountCents   int64  `json:"amount_cents"`
+	Status        string `json:"status"`
+	RejectionCode string `json:"rejection_code,omitempty"`
+	CreatedAt     string `json:"created_at"`
+}
+
+func (h *Handler) getBid(w http.ResponseWriter, r *http.Request, bidID uuid.UUID) {
+	principal, ok := h.authenticate(w, r)
+	if !ok {
+		return
+	}
+	bid, err := h.service.GetBid(r.Context(), bidID)
+	if err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	if principal.ID != bid.BidderID.String() && principal.Role != "admin" {
+		writeProblem(w, r, http.StatusForbidden, "forbidden", "cannot view another bidder's bid")
+		return
+	}
+	writeJSON(w, http.StatusOK, bidView{
+		ID:            bid.ID.String(),
+		AuctionID:     bid.AuctionID.String(),
+		BidderID:      bid.BidderID.String(),
+		AmountCents:   bid.AmountCents,
+		Status:        bid.Status,
+		RejectionCode: bid.RejectionCode,
+		CreatedAt:     bid.CreatedAt.UTC().Format(time.RFC3339),
+	})
+}
+
 func (h *Handler) authenticate(w http.ResponseWriter, r *http.Request) (auth.Principal, bool) {
 	if h.tokens == nil {
 		writeProblem(w, r, http.StatusUnauthorized, "unauthorized", "access token is required")
@@ -112,6 +161,15 @@ func (h *Handler) authenticate(w http.ResponseWriter, r *http.Request) (auth.Pri
 
 func auctionIDFromPath(path string) (uuid.UUID, bool) {
 	value := strings.TrimPrefix(path, "/v1/auctions/")
+	if value == "" || strings.Contains(value, "/") {
+		return uuid.Nil, false
+	}
+	id, err := uuid.Parse(value)
+	return id, err == nil
+}
+
+func bidIDFromPath(path string) (uuid.UUID, bool) {
+	value := strings.TrimPrefix(path, "/v1/bids/")
 	if value == "" || strings.Contains(value, "/") {
 		return uuid.Nil, false
 	}

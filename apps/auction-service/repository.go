@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,7 +10,9 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
+	"github.com/example/auction/packages/contracts"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -101,6 +104,273 @@ func scanAuction(row rowScanner) (Auction, error) {
 		&auction.AntiSnipingWindowSeconds, &auction.AntiSnipingExtensionSeconds, &auction.Version,
 		&auction.CreatedAt, &auction.UpdatedAt)
 	return auction, err
+}
+
+func scanBid(row rowScanner) (Bid, error) {
+	var bid Bid
+	err := row.Scan(&bid.ID, &bid.AuctionID, &bid.BidderID, &bid.CommandID, &bid.IdempotencyKey, &bid.AmountCents,
+		&bid.Status, &bid.RejectionCode, &bid.CreatedAt)
+	return bid, err
+}
+
+const bidSelect = `SELECT id, auction_id, bidder_id, command_id, idempotency_key, amount_cents, status, rejection_code, created_at FROM bids`
+
+func (r *repository) ApplyBidTx(ctx context.Context, command contracts.BidCommand) (BidResult, error) {
+	auctionID, err := uuid.Parse(command.AuctionID)
+	if err != nil {
+		return BidResult{}, fmt.Errorf("parse auction id: %w", ErrInvalidAuction)
+	}
+	bidderID, err := uuid.Parse(command.BidderID)
+	if err != nil {
+		return BidResult{}, fmt.Errorf("parse bidder id: %w", ErrInvalidAuction)
+	}
+	commandID, err := uuid.Parse(command.CommandID)
+	if err != nil {
+		return BidResult{}, fmt.Errorf("parse command id: %w", ErrInvalidAuction)
+	}
+	bidID, err := uuid.Parse(command.BidID)
+	if err != nil {
+		return BidResult{}, fmt.Errorf("parse bid id: %w", ErrInvalidAuction)
+	}
+	if strings.TrimSpace(command.IdempotencyKey) == "" || command.AmountCents <= 0 {
+		return BidResult{}, ErrInvalidAuction
+	}
+
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return BidResult{}, fmt.Errorf("begin bid transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	auction, err := scanAuction(tx.QueryRow(ctx, auctionSelect+` WHERE id = $1 FOR UPDATE`, auctionID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return BidResult{}, ErrAuctionNotFound
+	}
+	if err != nil {
+		return BidResult{}, fmt.Errorf("lock auction for bid: %w", err)
+	}
+
+	if existing, err := scanBid(tx.QueryRow(ctx, bidSelect+` WHERE command_id = $1`, commandID)); err == nil {
+		return bidResultFrom(existing), nil
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		return BidResult{}, fmt.Errorf("check processed command: %w", err)
+	}
+
+	if existing, err := scanBid(tx.QueryRow(ctx, bidSelect+` WHERE auction_id = $1 AND bidder_id = $2 AND idempotency_key = $3`, auctionID, bidderID, command.IdempotencyKey)); err == nil {
+		if existing.CommandID == commandID {
+			return bidResultFrom(existing), nil
+		}
+		return BidResult{}, ErrBidIdempotencyConflict
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		return BidResult{}, fmt.Errorf("check idempotency key: %w", err)
+	}
+
+	now := time.Now().UTC()
+	rules := AuctionRules{}
+	validationErr := rules.ValidateBid(auction, bidderID, command.AmountCents, now)
+	if validationErr != nil {
+		bid := Bid{
+			ID: bidID, AuctionID: auctionID, BidderID: bidderID, CommandID: commandID,
+			IdempotencyKey: command.IdempotencyKey, AmountCents: command.AmountCents,
+			Status: BidStatusRejected, RejectionCode: BidRejectionCode(validationErr), CreatedAt: now,
+		}
+		if err := insertBid(ctx, tx, bid); err != nil {
+			return BidResult{}, fmt.Errorf("insert rejected bid: %w", err)
+		}
+		if err := insertBidOutboxEvent(ctx, tx, auction, bid, now); err != nil {
+			return BidResult{}, fmt.Errorf("insert rejected bid outbox: %w", err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return BidResult{}, fmt.Errorf("commit rejected bid: %w", err)
+		}
+		return bidResultFrom(bid), nil
+	}
+
+	updated, err := rules.ApplyBid(auction, bidderID, command.AmountCents, now)
+	if err != nil {
+		return BidResult{}, err
+	}
+	nextVersion, err := safeAdd(auction.Version, 1)
+	if err != nil {
+		return BidResult{}, ErrInvalidAuction
+	}
+	bid := Bid{
+		ID: bidID, AuctionID: auctionID, BidderID: bidderID, CommandID: commandID,
+		IdempotencyKey: command.IdempotencyKey, AmountCents: command.AmountCents,
+		Status: BidStatusAccepted, CreatedAt: now,
+	}
+	if err := insertBid(ctx, tx, bid); err != nil {
+		return BidResult{}, fmt.Errorf("insert accepted bid: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE auctions SET current_price_cents = $2, current_winner_id = $3,
+		ends_at = $4, version = $5, updated_at = $6
+		WHERE id = $1`, auction.ID, updated.CurrentPriceCents, updated.CurrentWinnerID, updated.EndsAt, nextVersion, now); err != nil {
+		return BidResult{}, fmt.Errorf("update auction after bid: %w", err)
+	}
+	if err := insertBidOutboxEvent(ctx, tx, updated, bid, now); err != nil {
+		return BidResult{}, fmt.Errorf("insert accepted bid outbox: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return BidResult{}, fmt.Errorf("commit accepted bid: %w", err)
+	}
+	return bidResultFrom(bid), nil
+}
+
+func (r *repository) GetBid(ctx context.Context, bidID uuid.UUID) (Bid, error) {
+	bid, err := scanBid(r.pool.QueryRow(ctx, bidSelect+` WHERE id = $1`, bidID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Bid{}, ErrAuctionNotFound
+	}
+	if err != nil {
+		return Bid{}, fmt.Errorf("get bid: %w", err)
+	}
+	return bid, nil
+}
+
+func (r *repository) CloseDue(ctx context.Context, now time.Time) (int, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("begin close due transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	rows, err := tx.Query(ctx, `
+		WITH due AS (
+			SELECT id, version FROM auctions
+			WHERE status = 'live' AND ends_at <= $1
+			ORDER BY id
+			FOR UPDATE SKIP LOCKED
+		)
+		UPDATE auctions a
+		SET status = 'closed', version = a.version + 1, updated_at = $2
+		FROM due
+		WHERE a.id = due.id
+		RETURNING a.id, a.version, a.current_price_cents, a.current_winner_id`, now.UTC(), now.UTC())
+	if err != nil {
+		return 0, fmt.Errorf("query due auctions: %w", err)
+	}
+
+	type closedAuction struct {
+		id         uuid.UUID
+		version    int64
+		finalPrice int64
+		winnerID   *uuid.UUID
+	}
+	var closed []closedAuction
+	for rows.Next() {
+		var a closedAuction
+		if err := rows.Scan(&a.id, &a.version, &a.finalPrice, &a.winnerID); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("scan closed auction: %w", err)
+		}
+		closed = append(closed, a)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, fmt.Errorf("read closed auctions: %w", err)
+	}
+	rows.Close()
+
+	for _, a := range closed {
+		if err := insertCloseOutboxEvent(ctx, tx, a.id, a.version, a.finalPrice, a.winnerID, now.UTC()); err != nil {
+			return len(closed), fmt.Errorf("insert close outbox: %w", err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return len(closed), fmt.Errorf("commit close due: %w", err)
+	}
+	return len(closed), nil
+}
+
+func insertBid(ctx context.Context, tx pgx.Tx, bid Bid) error {
+	_, err := tx.Exec(ctx, `
+		INSERT INTO bids (id, auction_id, bidder_id, command_id, idempotency_key, amount_cents, status, rejection_code, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+		bid.ID, bid.AuctionID, bid.BidderID, bid.CommandID, bid.IdempotencyKey, bid.AmountCents, bid.Status, bid.RejectionCode, bid.CreatedAt)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return ErrBidIdempotencyConflict
+		}
+		return err
+	}
+	return nil
+}
+
+func nextAggregateVersion(ctx context.Context, tx pgx.Tx, aggregateID string) (int64, error) {
+	var version sql.NullInt64
+	if err := tx.QueryRow(ctx, `SELECT COALESCE(MAX(aggregate_version), 0) FROM outbox_events WHERE aggregate_id = $1`, aggregateID).Scan(&version); err != nil {
+		return 0, err
+	}
+	return version.Int64 + 1, nil
+}
+
+func insertBidOutboxEvent(ctx context.Context, tx pgx.Tx, auction Auction, bid Bid, now time.Time) error {
+	version, err := nextAggregateVersion(ctx, tx, auction.ID.String())
+	if err != nil {
+		return fmt.Errorf("resolve aggregate version: %w", err)
+	}
+	payload, err := json.Marshal(contracts.EventEnvelope[BidPlaced]{
+		EventID:    uuid.NewString(),
+		EventType:  "auction.bid.placed.v1",
+		Version:    1,
+		OccurredAt: now,
+		Producer:   "auction-service",
+		Payload: BidPlaced{
+			BidID:         bid.ID.String(),
+			AuctionID:     bid.AuctionID.String(),
+			BidderID:      bid.BidderID.String(),
+			AmountCents:   bid.AmountCents,
+			Status:        bid.Status,
+			RejectionCode: bid.RejectionCode,
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("marshal bid placed event: %w", err)
+	}
+	return insertOutboxEvent(ctx, tx, "auction.bid.placed.v1", auction.ID.String(), version, "auction.events.v1", auction.ID.String(), payload)
+}
+
+func insertCloseOutboxEvent(ctx context.Context, tx pgx.Tx, auctionID uuid.UUID, version int64, finalPrice int64, winnerID *uuid.UUID, now time.Time) error {
+	var winner string
+	if winnerID != nil {
+		winner = winnerID.String()
+	}
+	payload, err := json.Marshal(contracts.EventEnvelope[AuctionClosed]{
+		EventID:    uuid.NewString(),
+		EventType:  "auction.closed.v1",
+		Version:    1,
+		OccurredAt: now,
+		Producer:   "auction-service",
+		Payload:    AuctionClosed{AuctionID: auctionID.String(), FinalPriceCents: finalPrice, WinnerID: winner},
+	})
+	if err != nil {
+		return fmt.Errorf("marshal auction closed event: %w", err)
+	}
+	return insertOutboxEvent(ctx, tx, "auction.closed.v1", auctionID.String(), version, "auction.events.v1", auctionID.String(), payload)
+}
+
+func insertOutboxEvent(ctx context.Context, tx pgx.Tx, eventType, aggregateID string, version int64, topic, key string, payload []byte) error {
+	_, err := tx.Exec(ctx, `
+		INSERT INTO outbox_events (event_id, aggregate_id, aggregate_version, event_type, topic, event_key, payload, dlq_topic)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		uuid.New(), aggregateID, version, eventType, topic, key, payload, strings.Replace(topic, ".v1", ".dlq.v1", 1))
+	if err != nil {
+		return fmt.Errorf("insert outbox event: %w", err)
+	}
+	return nil
+}
+
+func bidResultFrom(bid Bid) BidResult {
+	return BidResult{
+		BidID:         bid.ID,
+		AuctionID:     bid.AuctionID,
+		BidderID:      bid.BidderID,
+		AmountCents:   bid.AmountCents,
+		Status:        bid.Status,
+		RejectionCode: bid.RejectionCode,
+	}
 }
 
 type httpProductClient struct {

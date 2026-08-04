@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/example/auction/packages/contracts"
 	"github.com/google/uuid"
 )
 
@@ -30,6 +31,7 @@ var (
 	ErrSellerCannotBid        = errors.New("seller cannot bid")
 	ErrAuctionConflict        = errors.New("auction conflicts with an existing auction")
 	ErrAuctionVersionConflict = errors.New("auction version conflict")
+	ErrBidIdempotencyConflict = errors.New("bid idempotency key reused with different payload")
 	ErrProductNotFound        = errors.New("product not found")
 	ErrProductNotOwner        = errors.New("seller does not own product")
 	ErrProductAuth            = errors.New("product service authorization failed")
@@ -80,10 +82,54 @@ type ProductSnapshot struct {
 	AuctionID   *uuid.UUID `json:"auction_id,omitempty"`
 }
 
+const (
+	BidStatusAccepted = "accepted"
+	BidStatusRejected = "rejected"
+)
+
+type Bid struct {
+	ID             uuid.UUID
+	AuctionID      uuid.UUID
+	BidderID       uuid.UUID
+	CommandID      uuid.UUID
+	IdempotencyKey string
+	AmountCents    int64
+	Status         string
+	RejectionCode  string
+	CreatedAt      time.Time
+}
+
+type BidResult struct {
+	BidID         uuid.UUID
+	AuctionID     uuid.UUID
+	BidderID      uuid.UUID
+	AmountCents   int64
+	Status        string
+	RejectionCode string
+}
+
+type BidPlaced struct {
+	BidID         string `json:"bid_id"`
+	AuctionID     string `json:"auction_id"`
+	BidderID      string `json:"bidder_id"`
+	AmountCents   int64  `json:"amount_cents"`
+	Status        string `json:"status"`
+	RejectionCode string `json:"rejection_code,omitempty"`
+}
+
+type AuctionClosed struct {
+	AuctionID       string `json:"auction_id"`
+	FinalPriceCents int64  `json:"final_price_cents"`
+	WinnerID        string `json:"winner_id,omitempty"`
+}
+
 type AuctionRepository interface {
 	Create(context.Context, Auction) error
 	Get(context.Context, uuid.UUID) (Auction, error)
 	Update(context.Context, Auction) error
+	ApplyBidTx(context.Context, contracts.BidCommand) (BidResult, error)
+	GetBid(context.Context, uuid.UUID) (Bid, error)
+	CloseDue(context.Context, time.Time) (int, error)
 }
 
 type ProductClient interface {
@@ -95,6 +141,30 @@ type ProductClient interface {
 type AuctionService interface {
 	Create(context.Context, uuid.UUID, CreateAuctionInput) (Auction, error)
 	Get(context.Context, uuid.UUID) (AuctionView, error)
+	GetBid(context.Context, uuid.UUID) (Bid, error)
+}
+
+type BidProcessor interface {
+	Handle(context.Context, contracts.BidCommand) error
+}
+
+type AuctionCloser interface {
+	CloseDue(context.Context, time.Time) (int, error)
+}
+
+func BidRejectionCode(err error) string {
+	switch {
+	case errors.Is(err, ErrBidTooLow):
+		return "bid_too_low"
+	case errors.Is(err, ErrSellerCannotBid):
+		return "seller_cannot_bid"
+	case errors.Is(err, ErrAuctionNotLive):
+		return "auction_not_live"
+	case errors.Is(err, ErrInvalidAuction):
+		return "invalid_auction"
+	default:
+		return "rejected"
+	}
 }
 
 type AuctionRules struct{}
@@ -263,6 +333,13 @@ func (s *auctionService) Get(ctx context.Context, auctionID uuid.UUID) (AuctionV
 		return AuctionView{}, err
 	}
 	return AuctionView{Auction: auction}, nil
+}
+
+func (s *auctionService) GetBid(ctx context.Context, bidID uuid.UUID) (Bid, error) {
+	if bidID == uuid.Nil || s.repository == nil {
+		return Bid{}, ErrAuctionNotFound
+	}
+	return s.repository.GetBid(ctx, bidID)
 }
 
 func validAuction(auction Auction) bool {
