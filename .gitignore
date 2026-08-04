@@ -1,4 +1,5 @@
 .worktrees/
+.superpowers/
 .env
 bin/
 coverage/
