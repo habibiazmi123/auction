@@ -37,7 +37,7 @@ type Settlement struct {
 var ErrSettlementNotFound = errors.New("settlement not found")
 
 type SettlementRepository interface {
-	CreateFromCloseTx(ctx context.Context, event contracts.AuctionClosed) (Settlement, error)
+	CreateFromCloseTx(ctx context.Context, eventID string, event contracts.AuctionClosed) (Settlement, error)
 	GetByAuctionID(ctx context.Context, auctionID uuid.UUID) (Settlement, error)
 }
 
@@ -47,7 +47,13 @@ func NewSettlementRepository(pool *pgxpool.Pool) SettlementRepository {
 	return &settlementRepository{pool: pool}
 }
 
-func (r *settlementRepository) CreateFromCloseTx(ctx context.Context, event contracts.AuctionClosed) (Settlement, error) {
+func (r *settlementRepository) CreateFromCloseTx(ctx context.Context, eventID string, event contracts.AuctionClosed) (Settlement, error) {
+	// Auctions that close with no bids have no settlement; commit the Kafka
+	// offset by returning nil without error.
+	if event.WinnerID == "" {
+		return Settlement{}, nil
+	}
+
 	auctionID, err := uuid.Parse(event.AuctionID)
 	if err != nil {
 		return Settlement{}, fmt.Errorf("parse auction id: %w", err)
@@ -62,6 +68,11 @@ func (r *settlementRepository) CreateFromCloseTx(ctx context.Context, event cont
 	}
 	if event.FinalPriceCents <= 0 {
 		return Settlement{}, fmt.Errorf("invalid final price")
+	}
+
+	sourceEventID, err := uuid.Parse(eventID)
+	if err != nil {
+		return Settlement{}, fmt.Errorf("parse source event id: %w", err)
 	}
 
 	tx, err := r.pool.Begin(ctx)
@@ -83,7 +94,7 @@ func (r *settlementRepository) CreateFromCloseTx(ctx context.Context, event cont
 		BidID:         bidID,
 		AmountCents:   event.FinalPriceCents,
 		Status:        SettlementStatusPending,
-		SourceEventID: uuid.New(),
+		SourceEventID: sourceEventID,
 	}
 
 	var inserted bool

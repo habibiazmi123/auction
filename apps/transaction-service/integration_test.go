@@ -58,6 +58,7 @@ func TestSettlementCreationIsIdempotent(t *testing.T) {
 
 	repository := NewSettlementRepository(pool)
 	auctionID := uuid.NewString()
+	eventID := uuid.NewString()
 	closeEvent := contracts.AuctionClosed{
 		AuctionID:       auctionID,
 		SellerID:        uuid.NewString(),
@@ -66,16 +67,19 @@ func TestSettlementCreationIsIdempotent(t *testing.T) {
 		WinnerID:        uuid.NewString(),
 	}
 
-	first, err := repository.CreateFromCloseTx(ctx, closeEvent)
+	first, err := repository.CreateFromCloseTx(ctx, eventID, closeEvent)
 	if err != nil {
 		t.Fatalf("create settlement first: %v", err)
 	}
-	second, err := repository.CreateFromCloseTx(ctx, closeEvent)
+	second, err := repository.CreateFromCloseTx(ctx, eventID, closeEvent)
 	if err != nil {
 		t.Fatalf("create settlement second: %v", err)
 	}
 	if first.ID != second.ID {
 		t.Fatalf("expected same settlement, got %s and %s", first.ID, second.ID)
+	}
+	if first.SourceEventID.String() != eventID {
+		t.Fatalf("expected source_event_id=%s, got %s", eventID, first.SourceEventID.String())
 	}
 
 	var count int
@@ -92,5 +96,47 @@ func TestSettlementCreationIsIdempotent(t *testing.T) {
 	}
 	if outboxCount != 1 {
 		t.Fatalf("expected exactly one settlement outbox event, got %d", outboxCount)
+	}
+}
+
+func TestSettlementCreationSkipsNoWinner(t *testing.T) {
+	if os.Getenv("INTEGRATION_TEST") != "1" {
+		t.Skip("set INTEGRATION_TEST=1 to run against Compose PostgreSQL transaction_db")
+	}
+	ctx := context.Background()
+	pool := transactionIntegrationPool(t, ctx)
+	defer pool.Close()
+
+	repository := NewSettlementRepository(pool)
+	auctionID := uuid.NewString()
+	closeEvent := contracts.AuctionClosed{
+		AuctionID:       auctionID,
+		SellerID:        uuid.NewString(),
+		FinalPriceCents: 0,
+		WinnerID:        "",
+	}
+
+	settlement, err := repository.CreateFromCloseTx(ctx, uuid.NewString(), closeEvent)
+	if err != nil {
+		t.Fatalf("create no-winner settlement: %v", err)
+	}
+	if settlement != (Settlement{}) {
+		t.Fatalf("expected empty settlement, got %+v", settlement)
+	}
+
+	var count int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM settlements WHERE auction_id = $1`, auctionID).Scan(&count); err != nil {
+		t.Fatalf("count settlements: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("expected no settlement row for no-winner auction, got %d", count)
+	}
+
+	var outboxCount int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM outbox_events WHERE event_type = 'transaction.settlement.created.v1' AND aggregate_id = $1`, auctionID).Scan(&outboxCount); err != nil {
+		t.Fatalf("count settlement outbox events: %v", err)
+	}
+	if outboxCount != 0 {
+		t.Fatalf("expected no settlement outbox event for no-winner auction, got %d", outboxCount)
 	}
 }

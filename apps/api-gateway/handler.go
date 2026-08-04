@@ -39,18 +39,38 @@ func (b *bidIngress) Publish(ctx context.Context, command contracts.BidCommand) 
 }
 
 type Handler struct {
-	ingress         BidIngress
-	tokens          auth.TokenService
-	hub             *Hub
-	notificationURL string
-	httpClient      *http.Client
+	ingress             BidIngress
+	tokens              auth.TokenService
+	hub                 *Hub
+	notificationURL     string
+	notificationProxy   *httputil.ReverseProxy
+	allowedOrigins      []string
+	httpClient          *http.Client
 }
 
-func NewHandler(ingress BidIngress, tokens auth.TokenService, hub *Hub, notificationURL string, httpClient *http.Client) *Handler {
+func NewHandler(ingress BidIngress, tokens auth.TokenService, hub *Hub, notificationURL string, allowedOrigins []string, httpClient *http.Client) *Handler {
 	if httpClient == nil {
 		httpClient = http.DefaultClient
 	}
-	return &Handler{ingress: ingress, tokens: tokens, hub: hub, notificationURL: notificationURL, httpClient: httpClient}
+	var notificationProxy *httputil.ReverseProxy
+	if notificationURL != "" {
+		if target, err := url.Parse(notificationURL); err == nil {
+			notificationProxy = httputil.NewSingleHostReverseProxy(target)
+			notificationProxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
+				writeProblem(w, r, http.StatusServiceUnavailable, "notification_unavailable", "notification service unavailable")
+			}
+			notificationProxy.Transport = httpClient.Transport
+		}
+	}
+	return &Handler{
+		ingress:           ingress,
+		tokens:            tokens,
+		hub:               hub,
+		notificationURL:   notificationURL,
+		notificationProxy: notificationProxy,
+		allowedOrigins:    allowedOrigins,
+		httpClient:        httpClient,
+	}
 }
 
 type problemResponse struct {
@@ -77,6 +97,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/auctions/") && strings.HasSuffix(r.URL.Path, "/live") {
 		h.subscribeAuction(w, r)
+		return
+	}
+	if r.Method == http.MethodGet && r.URL.Path == "/v1/notifications/live" {
+		h.subscribeNotifications(w, r)
 		return
 	}
 	if r.Method == http.MethodGet && r.URL.Path == "/v1/notifications" {
@@ -193,12 +217,8 @@ func (h *Handler) subscribeAuction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
-		Subprotocols:       []string{"auction-live"},
-		InsecureSkipVerify: true,
-	})
+	conn, err := h.acceptWebSocket(w, r, "auction-live")
 	if err != nil {
-		writeProblem(w, r, http.StatusBadRequest, "websocket_error", "failed to accept websocket")
 		return
 	}
 
@@ -208,22 +228,58 @@ func (h *Handler) subscribeAuction(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (h *Handler) subscribeNotifications(w http.ResponseWriter, r *http.Request) {
+	principal, ok := h.authenticate(w, r)
+	if !ok {
+		return
+	}
+	userID, err := uuid.Parse(principal.ID)
+	if err != nil {
+		writeProblem(w, r, http.StatusUnauthorized, "unauthorized", "access token is invalid")
+		return
+	}
+	if h.hub == nil {
+		writeProblem(w, r, http.StatusServiceUnavailable, "subscription_rejected", "notification hub unavailable")
+		return
+	}
+	if !h.hub.CanSubscribeNotification(userID) {
+		writeProblem(w, r, http.StatusServiceUnavailable, "subscription_rejected", "unable to subscribe to notifications")
+		return
+	}
+	conn, err := h.acceptWebSocket(w, r, "notification-live")
+	if err != nil {
+		return
+	}
+	if err := h.hub.SubscribeNotification(context.Background(), userID, conn); err != nil {
+		conn.Close(websocket.StatusGoingAway, "subscription rejected")
+		return
+	}
+}
+
+func (h *Handler) acceptWebSocket(w http.ResponseWriter, r *http.Request, subprotocol string) (*websocket.Conn, error) {
+	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
+		Subprotocols:       []string{subprotocol},
+		OriginPatterns:     h.allowedOrigins,
+		InsecureSkipVerify: false,
+	})
+	if err != nil {
+		writeProblem(w, r, http.StatusBadRequest, "websocket_error", "failed to accept websocket")
+		return nil, err
+	}
+	return conn, nil
+}
+
 func (h *Handler) proxyNotifications(w http.ResponseWriter, r *http.Request) {
 	principal, ok := h.authenticate(w, r)
 	if !ok {
 		return
 	}
-	target, err := url.Parse(h.notificationURL)
-	if err != nil {
+	if h.notificationProxy == nil {
 		writeProblem(w, r, http.StatusInternalServerError, "internal_error", "notification proxy misconfigured")
 		return
 	}
-	proxy := httputil.NewSingleHostReverseProxy(target)
-	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
-		writeProblem(w, r, http.StatusServiceUnavailable, "notification_unavailable", "notification service unavailable")
-	}
 	r.Header.Set("X-User-ID", principal.ID)
-	proxy.ServeHTTP(w, r)
+	h.notificationProxy.ServeHTTP(w, r)
 }
 
 func auctionIDFromLivePath(path string) (uuid.UUID, bool) {

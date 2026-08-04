@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -38,7 +40,7 @@ func issueTestToken(t *testing.T, tokens auth.TokenService, userID, role string)
 func TestGatewayWebSocketRejectsWithoutJWT(t *testing.T) {
 	tokens := testTokens(t)
 	hub := newTestHub()
-	handler := NewHandler(&fakeBidIngress{}, tokens, hub, "", nil)
+	handler := NewHandler(&fakeBidIngress{}, tokens, hub, "", nil, nil)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
@@ -53,7 +55,7 @@ func TestGatewayWebSocketRejectsWithoutJWT(t *testing.T) {
 func TestGatewayWebSocketAuthenticatedHandshake(t *testing.T) {
 	tokens := testTokens(t)
 	hub := newTestHub()
-	handler := NewHandler(&fakeBidIngress{}, tokens, hub, "", nil)
+	handler := NewHandler(&fakeBidIngress{}, tokens, hub, "", nil, nil)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
@@ -88,7 +90,7 @@ func TestGatewayEventFanoutIsolatesByAuction(t *testing.T) {
 
 	tokens := testTokens(t)
 	hub := newTestHub()
-	handler := NewHandler(&fakeBidIngress{}, tokens, hub, "", nil)
+	handler := NewHandler(&fakeBidIngress{}, tokens, hub, "", nil, nil)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
@@ -149,7 +151,7 @@ func TestGatewayHeartbeatCleansUpDeadConnection(t *testing.T) {
 
 	tokens := testTokens(t)
 	hub := newTestHub()
-	handler := NewHandler(&fakeBidIngress{}, tokens, hub, "", nil)
+	handler := NewHandler(&fakeBidIngress{}, tokens, hub, "", nil, nil)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
@@ -187,7 +189,7 @@ func TestGatewayReconnectResubscribes(t *testing.T) {
 
 	tokens := testTokens(t)
 	hub := newTestHub()
-	handler := NewHandler(&fakeBidIngress{}, tokens, hub, "", nil)
+	handler := NewHandler(&fakeBidIngress{}, tokens, hub, "", nil, nil)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
@@ -239,7 +241,7 @@ func TestGatewayAuctionLimitRejectsExcessSubscriptions(t *testing.T) {
 	tokens := testTokens(t)
 	hub := newTestHub()
 	hub.maxPerAuction = 1
-	handler := NewHandler(&fakeBidIngress{}, tokens, hub, "", nil)
+	handler := NewHandler(&fakeBidIngress{}, tokens, hub, "", nil, nil)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
@@ -285,7 +287,7 @@ func TestGatewayProxyNotificationsForwardsUserID(t *testing.T) {
 	}))
 	defer notificationServer.Close()
 
-	handler := NewHandler(&fakeBidIngress{}, tokens, nil, notificationServer.URL, nil)
+	handler := NewHandler(&fakeBidIngress{}, tokens, nil, notificationServer.URL, nil, nil)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
@@ -306,3 +308,134 @@ func TestGatewayProxyNotificationsForwardsUserID(t *testing.T) {
 		t.Fatalf("expected X-User-ID=%s, got %s", userID, receivedUserID)
 	}
 }
+
+func TestGatewayNamespaceIsolatesAuctionFromNotifications(t *testing.T) {
+	origInterval := pingInterval
+	origTimeout := pingTimeout
+	pingInterval = 10 * time.Second
+	pingTimeout = 5 * time.Second
+	defer func() {
+		pingInterval = origInterval
+		pingTimeout = origTimeout
+	}()
+
+	tokens := testTokens(t)
+	hub := newTestHub()
+	handler := NewHandler(&fakeBidIngress{}, tokens, hub, "", nil, nil)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	recipientID := uuid.NewString()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	// Subscribing to an auction whose ID equals a user's notification ID
+	// must not deliver private notifications.
+	auctSubscriber, _, err := websocket.Dial(ctx, server.URL+"/v1/auctions/"+recipientID+"/live", &websocket.DialOptions{
+		HTTPHeader: http.Header{"Authorization": []string{"Bearer " + issueTestToken(t, tokens, uuid.NewString(), "buyer")}},
+	})
+	if err != nil {
+		t.Fatalf("dial auction subscriber: %v", err)
+	}
+	defer auctSubscriber.Close(websocket.StatusNormalClosure, "")
+
+	// Private notification subscriber must receive events for its own recipient ID.
+	notifSubscriber, _, err := websocket.Dial(ctx, server.URL+"/v1/notifications/live", &websocket.DialOptions{
+		HTTPHeader: http.Header{"Authorization": []string{"Bearer " + issueTestToken(t, tokens, recipientID, "buyer")}},
+	})
+	if err != nil {
+		t.Fatalf("dial notification subscriber: %v", err)
+	}
+	defer notifSubscriber.Close(websocket.StatusNormalClosure, "")
+
+	time.Sleep(100 * time.Millisecond)
+
+	msg := []byte(`{"event_id":"notif-1","recipient_id":"` + recipientID + `"}`)
+	hub.PublishNotification(ctx, uuid.MustParse(recipientID), msg)
+
+	readCtx, readCancel := context.WithTimeout(ctx, 2*time.Second)
+	defer readCancel()
+	typ, data, err := notifSubscriber.Read(readCtx)
+	if err != nil {
+		t.Fatalf("read notification subscriber: %v", err)
+	}
+	if typ != websocket.MessageText || !strings.Contains(string(data), "notif-1") {
+		t.Fatalf("expected notification event, got %s: %s", typ, string(data))
+	}
+
+	readCtxA, readCancelA := context.WithTimeout(ctx, 500*time.Millisecond)
+	defer readCancelA()
+	_, _, err = auctSubscriber.Read(readCtxA)
+	if err == nil {
+		t.Fatal("expected auction subscriber to receive no notification event")
+	}
+}
+
+func TestHubPublishNoRaceOnClose(t *testing.T) {
+	origInterval := pingInterval
+	origTimeout := pingTimeout
+	pingInterval = 10 * time.Second
+	pingTimeout = 5 * time.Second
+	defer func() {
+		pingInterval = origInterval
+		pingTimeout = origTimeout
+	}()
+
+	tokens := testTokens(t)
+	hub := newTestHub()
+	handler := NewHandler(&fakeBidIngress{}, tokens, hub, "", nil, nil)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	userID := uuid.NewString()
+	auctionID := uuid.NewString()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	clients := make([]*websocket.Conn, 10)
+	for i := range clients {
+		client, _, err := websocket.Dial(ctx, server.URL+"/v1/auctions/"+auctionID+"/live", &websocket.DialOptions{
+			HTTPHeader: http.Header{"Authorization": []string{"Bearer " + issueTestToken(t, tokens, userID, "buyer")}},
+		})
+		if err != nil {
+			t.Fatalf("dial client %d: %v", i, err)
+		}
+		clients[i] = client
+	}
+	defer func() {
+		for _, client := range clients {
+			if client != nil {
+				client.Close(websocket.StatusNormalClosure, "")
+			}
+		}
+	}()
+	time.Sleep(100 * time.Millisecond)
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := range clients {
+			if i%2 == 0 {
+				clients[i].Close(websocket.StatusNormalClosure, "")
+				clients[i] = nil
+			}
+		}
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 200; i++ {
+			msg := []byte(fmt.Sprintf(`{"event_id":"race-%d","auction_id":"%s"}`, i, auctionID))
+			if err := hub.Publish(ctx, uuid.MustParse(auctionID), msg); err != nil {
+				t.Errorf("publish: %v", err)
+				return
+			}
+		}
+	}()
+
+	wg.Wait()
+	// The only assertion is that the test finishes without a panic or race.
+}
+

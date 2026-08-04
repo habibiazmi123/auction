@@ -15,6 +15,7 @@ type Config struct {
 	PostgresPassword string
 	PostgresPort     int
 	ServicePorts     map[string]int
+	AllowedOrigins   []string
 }
 
 type MissingEnvError struct{ Key string }
@@ -84,6 +85,14 @@ func Load() (Config, error) {
 	if len(parsedBrokers) == 0 {
 		return Config{}, errors.New("KAFKA_BROKERS contains no brokers")
 	}
+	var allowedOrigins []string
+	if origins := strings.TrimSpace(os.Getenv("ALLOWED_ORIGINS")); origins != "" {
+		for _, o := range strings.Split(origins, ",") {
+			if o = strings.TrimSpace(o); o != "" {
+				allowedOrigins = append(allowedOrigins, o)
+			}
+		}
+	}
 	return Config{
 		KafkaBrokers:     parsedBrokers,
 		JWTSecret:        secret,
@@ -91,5 +100,6 @@ func Load() (Config, error) {
 		PostgresPassword: password,
 		PostgresPort:     port,
 		ServicePorts:     servicePorts,
+		AllowedOrigins:   allowedOrigins,
 	}, nil
 }

@@ -93,7 +93,7 @@ func (r *notificationRepository) CreateIfAbsent(ctx context.Context, eventID str
 	}
 
 	if inserted {
-		if err := r.insertNotificationOutboxEvent(ctx, tx, sourceEventID, recipientID, input.Type, input.AuctionID, input.Title, input.Body); err != nil {
+		if err := r.insertNotificationOutboxEvent(ctx, tx, notificationID, sourceEventID, recipientID, input.Type, input.AuctionID, input.Title, input.Body); err != nil {
 			return fmt.Errorf("insert notification outbox: %w", err)
 		}
 	}
@@ -104,7 +104,7 @@ func (r *notificationRepository) CreateIfAbsent(ctx context.Context, eventID str
 	return nil
 }
 
-func (r *notificationRepository) insertNotificationOutboxEvent(ctx context.Context, tx pgx.Tx, sourceEventID uuid.UUID, recipientID uuid.UUID, notificationType, auctionID, title, body string) error {
+func (r *notificationRepository) insertNotificationOutboxEvent(ctx context.Context, tx pgx.Tx, notificationID uuid.UUID, sourceEventID uuid.UUID, recipientID uuid.UUID, notificationType, auctionID, title, body string) error {
 	version, err := nextAggregateVersion(ctx, tx, recipientID.String())
 	if err != nil {
 		return fmt.Errorf("resolve aggregate version: %w", err)
@@ -115,7 +115,7 @@ func (r *notificationRepository) insertNotificationOutboxEvent(ctx context.Conte
 		Version:    1,
 		Producer:   "notification-service",
 		Payload: contracts.NotificationCreated{
-			NotificationID: uuid.NewString(),
+			NotificationID: notificationID.String(),
 			RecipientID:    recipientID.String(),
 			Type:           notificationType,
 			AuctionID:      auctionID,

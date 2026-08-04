@@ -11,7 +11,7 @@ import (
 )
 
 type CloseEventProcessor interface {
-	Process(ctx context.Context, event contracts.AuctionClosed) error
+	Process(ctx context.Context, eventID string, event contracts.AuctionClosed) error
 }
 
 type closeEventProcessor struct {
@@ -22,8 +22,8 @@ func NewCloseEventProcessor(repository SettlementRepository) CloseEventProcessor
 	return &closeEventProcessor{repository: repository}
 }
 
-func (p *closeEventProcessor) Process(ctx context.Context, event contracts.AuctionClosed) error {
-	if _, err := p.repository.CreateFromCloseTx(ctx, event); err != nil {
+func (p *closeEventProcessor) Process(ctx context.Context, eventID string, event contracts.AuctionClosed) error {
+	if _, err := p.repository.CreateFromCloseTx(ctx, eventID, event); err != nil {
 		return err
 	}
 	return nil
@@ -40,7 +40,7 @@ func RunCloseEventConsumer(ctx context.Context, cfg kafka.ConsumerConfig, reposi
 				slog.WarnContext(ctx, "drop malformed auction closed event", "error", err)
 				return nil
 			}
-			return processor.Process(ctx, envelope.Payload)
+			return processor.Process(ctx, envelope.EventID, envelope.Payload)
 		})
 		consumer.Close()
 		if err != nil {

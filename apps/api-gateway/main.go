@@ -65,7 +65,7 @@ func main() {
 
 	server := &http.Server{
 		Addr:              fmt.Sprintf(":%d", gatewayPort(cfg)),
-		Handler:           observability.Middleware(slog.Default())(NewHandler(NewBidIngress(producer), tokens, hub, notificationURL, &http.Client{Timeout: 5 * time.Second})),
+		Handler:           observability.Middleware(slog.Default())(NewHandler(NewBidIngress(producer), tokens, hub, notificationURL, cfg.AllowedOrigins, &http.Client{Timeout: 5 * time.Second})),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	slog.Info("api gateway listening", "addr", server.Addr)
