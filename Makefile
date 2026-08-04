@@ -17,8 +17,7 @@ topics:
 
 migrate:
 	@for service in user product auction transaction notification; do \
-		db="$${service}_db"; \
-		go run ./cmd/migrate --database "$${db}" --migrations "services/$${service}/migrations"; \
+		go run ./cmd/migrate -service "$${service}"; \
 	done
 
 test:
