@@ -246,21 +246,23 @@ func (r *repository) CloseDue(ctx context.Context, now time.Time) (int, error) {
 		SET status = 'closed', version = a.version + 1, updated_at = $2
 		FROM due
 		WHERE a.id = due.id
-		RETURNING a.id, a.version, a.current_price_cents, a.current_winner_id`, now.UTC(), now.UTC())
+		RETURNING a.id, a.seller_id, a.version, a.current_price_cents, a.current_winner_id`, now.UTC(), now.UTC())
 	if err != nil {
 		return 0, fmt.Errorf("query due auctions: %w", err)
 	}
 
 	type closedAuction struct {
-		id         uuid.UUID
-		version    int64
-		finalPrice int64
-		winnerID   *uuid.UUID
+		id           uuid.UUID
+		sellerID     uuid.UUID
+		version      int64
+		finalPrice   int64
+		winnerID     *uuid.UUID
+		winningBidID uuid.UUID
 	}
 	var closed []closedAuction
 	for rows.Next() {
 		var a closedAuction
-		if err := rows.Scan(&a.id, &a.version, &a.finalPrice, &a.winnerID); err != nil {
+		if err := rows.Scan(&a.id, &a.sellerID, &a.version, &a.finalPrice, &a.winnerID); err != nil {
 			rows.Close()
 			return 0, fmt.Errorf("scan closed auction: %w", err)
 		}
@@ -273,7 +275,17 @@ func (r *repository) CloseDue(ctx context.Context, now time.Time) (int, error) {
 	rows.Close()
 
 	for _, a := range closed {
-		if err := insertCloseOutboxEvent(ctx, tx, a.id, a.version, a.finalPrice, a.winnerID, now.UTC()); err != nil {
+		bidID := a.winningBidID
+		if bidID == uuid.Nil && a.winnerID != nil {
+			if err := tx.QueryRow(ctx, `
+				SELECT id FROM bids
+				WHERE auction_id = $1 AND bidder_id = $2 AND status = 'accepted'
+				ORDER BY amount_cents DESC, created_at DESC
+				LIMIT 1`, a.id, *a.winnerID).Scan(&bidID); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+				return len(closed), fmt.Errorf("resolve winning bid: %w", err)
+			}
+		}
+		if err := insertCloseOutboxEvent(ctx, tx, a.id, a.sellerID, bidID, a.version, a.finalPrice, a.winnerID, now.UTC()); err != nil {
 			return len(closed), fmt.Errorf("insert close outbox: %w", err)
 		}
 	}
@@ -332,10 +344,14 @@ func insertBidOutboxEvent(ctx context.Context, tx pgx.Tx, auction Auction, bid B
 	return insertOutboxEvent(ctx, tx, "auction.bid.placed.v1", auction.ID.String(), version, "auction.events.v1", auction.ID.String(), payload)
 }
 
-func insertCloseOutboxEvent(ctx context.Context, tx pgx.Tx, auctionID uuid.UUID, version int64, finalPrice int64, winnerID *uuid.UUID, now time.Time) error {
+func insertCloseOutboxEvent(ctx context.Context, tx pgx.Tx, auctionID uuid.UUID, sellerID uuid.UUID, bidID uuid.UUID, version int64, finalPrice int64, winnerID *uuid.UUID, now time.Time) error {
 	var winner string
 	if winnerID != nil {
 		winner = winnerID.String()
+	}
+	var bid string
+	if bidID != uuid.Nil {
+		bid = bidID.String()
 	}
 	payload, err := json.Marshal(contracts.EventEnvelope[AuctionClosed]{
 		EventID:    uuid.NewString(),
@@ -343,7 +359,7 @@ func insertCloseOutboxEvent(ctx context.Context, tx pgx.Tx, auctionID uuid.UUID,
 		Version:    1,
 		OccurredAt: now,
 		Producer:   "auction-service",
-		Payload:    AuctionClosed{AuctionID: auctionID.String(), FinalPriceCents: finalPrice, WinnerID: winner},
+		Payload:    AuctionClosed{AuctionID: auctionID.String(), SellerID: sellerID.String(), BidID: bid, FinalPriceCents: finalPrice, WinnerID: winner},
 	})
 	if err != nil {
 		return fmt.Errorf("marshal auction closed event: %w", err)

@@ -20,8 +20,11 @@ var services = map[string]string{
 }
 
 var migrationDirs = map[string]string{
-	"user":    "migrations/user",
-	"product": "migrations/product",
+	"user":         "migrations/user",
+	"product":      "migrations/product",
+	"auction":      "migrations/auction",
+	"transaction":  "migrations/transaction",
+	"notification": "migrations/notification",
 }
 
 func main() {

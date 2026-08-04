@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"strings"
 
 	"github.com/example/auction/packages/auth"
@@ -12,6 +14,7 @@ import (
 	"github.com/example/auction/packages/kafka"
 	"github.com/example/auction/packages/observability"
 	"github.com/google/uuid"
+	"nhooyr.io/websocket"
 )
 
 type BidIngress interface {
@@ -36,12 +39,18 @@ func (b *bidIngress) Publish(ctx context.Context, command contracts.BidCommand) 
 }
 
 type Handler struct {
-	ingress BidIngress
-	tokens  auth.TokenService
+	ingress         BidIngress
+	tokens          auth.TokenService
+	hub             *Hub
+	notificationURL string
+	httpClient      *http.Client
 }
 
-func NewHandler(ingress BidIngress, tokens auth.TokenService) *Handler {
-	return &Handler{ingress: ingress, tokens: tokens}
+func NewHandler(ingress BidIngress, tokens auth.TokenService, hub *Hub, notificationURL string, httpClient *http.Client) *Handler {
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
+	return &Handler{ingress: ingress, tokens: tokens, hub: hub, notificationURL: notificationURL, httpClient: httpClient}
 }
 
 type problemResponse struct {
@@ -64,6 +73,14 @@ type bidIngressResponse struct {
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/v1/auctions/") && strings.HasSuffix(r.URL.Path, "/bids") {
 		h.createBid(w, r)
+		return
+	}
+	if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/auctions/") && strings.HasSuffix(r.URL.Path, "/live") {
+		h.subscribeAuction(w, r)
+		return
+	}
+	if r.Method == http.MethodGet && r.URL.Path == "/v1/notifications" {
+		h.proxyNotifications(w, r)
 		return
 	}
 	writeProblem(w, r, http.StatusNotFound, "not_found", "route not found")
@@ -152,6 +169,70 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, target any) bool {
 		return false
 	}
 	return true
+}
+
+func (h *Handler) subscribeAuction(w http.ResponseWriter, r *http.Request) {
+	principal, ok := h.authenticate(w, r)
+	if !ok {
+		return
+	}
+	auctionID, ok := auctionIDFromLivePath(r.URL.Path)
+	if !ok {
+		writeProblem(w, r, http.StatusBadRequest, "invalid_input", "auction_id is invalid")
+		return
+	}
+
+	userID, err := uuid.Parse(principal.ID)
+	if err != nil {
+		writeProblem(w, r, http.StatusUnauthorized, "unauthorized", "access token is invalid")
+		return
+	}
+
+	if !h.hub.CanSubscribe(auctionID, userID) {
+		writeProblem(w, r, http.StatusServiceUnavailable, "subscription_rejected", "unable to subscribe to auction")
+		return
+	}
+
+	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
+		Subprotocols:       []string{"auction-live"},
+		InsecureSkipVerify: true,
+	})
+	if err != nil {
+		writeProblem(w, r, http.StatusBadRequest, "websocket_error", "failed to accept websocket")
+		return
+	}
+
+	if err := h.hub.Subscribe(context.Background(), auctionID, userID, conn); err != nil {
+		conn.Close(websocket.StatusGoingAway, "subscription rejected")
+		return
+	}
+}
+
+func (h *Handler) proxyNotifications(w http.ResponseWriter, r *http.Request) {
+	principal, ok := h.authenticate(w, r)
+	if !ok {
+		return
+	}
+	target, err := url.Parse(h.notificationURL)
+	if err != nil {
+		writeProblem(w, r, http.StatusInternalServerError, "internal_error", "notification proxy misconfigured")
+		return
+	}
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
+		writeProblem(w, r, http.StatusServiceUnavailable, "notification_unavailable", "notification service unavailable")
+	}
+	r.Header.Set("X-User-ID", principal.ID)
+	proxy.ServeHTTP(w, r)
+}
+
+func auctionIDFromLivePath(path string) (uuid.UUID, bool) {
+	value := strings.TrimPrefix(strings.TrimSuffix(path, "/live"), "/v1/auctions/")
+	if value == "" || strings.Contains(value, "/") {
+		return uuid.Nil, false
+	}
+	id, err := uuid.Parse(value)
+	return id, err == nil
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {

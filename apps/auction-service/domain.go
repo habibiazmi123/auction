@@ -108,20 +108,9 @@ type BidResult struct {
 	RejectionCode string
 }
 
-type BidPlaced struct {
-	BidID         string `json:"bid_id"`
-	AuctionID     string `json:"auction_id"`
-	BidderID      string `json:"bidder_id"`
-	AmountCents   int64  `json:"amount_cents"`
-	Status        string `json:"status"`
-	RejectionCode string `json:"rejection_code,omitempty"`
-}
+type BidPlaced = contracts.BidPlaced
 
-type AuctionClosed struct {
-	AuctionID       string `json:"auction_id"`
-	FinalPriceCents int64  `json:"final_price_cents"`
-	WinnerID        string `json:"winner_id,omitempty"`
-}
+type AuctionClosed = contracts.AuctionClosed
 
 type AuctionRepository interface {
 	Create(context.Context, Auction) error

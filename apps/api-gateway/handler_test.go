@@ -52,9 +52,13 @@ func issueGatewayToken(t *testing.T, role string, id string) string {
 	return pair.AccessToken
 }
 
+func newTestHandler(ingress BidIngress, tokens auth.TokenService) *Handler {
+	return NewHandler(ingress, tokens, nil, "", nil)
+}
+
 func TestCreateBidRequiresUUIDAuctionID(t *testing.T) {
 	ingress := &fakeBidIngress{}
-	handler := NewHandler(ingress, &fakeTokenService{})
+	handler := newTestHandler(ingress, &fakeTokenService{})
 
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/v1/auctions/not-a-uuid/bids", strings.NewReader(`{"amount_cents":100,"idempotency_key":"k"}`))
@@ -71,7 +75,7 @@ func TestCreateBidRequiresUUIDAuctionID(t *testing.T) {
 
 func TestCreateBidRequiresPositiveAmount(t *testing.T) {
 	ingress := &fakeBidIngress{}
-	handler := NewHandler(ingress, &fakeTokenService{})
+	handler := newTestHandler(ingress, &fakeTokenService{})
 	auctionID := uuid.NewString()
 
 	for _, amount := range []int64{0, -1} {
@@ -95,7 +99,7 @@ func stringAmount(amount int64) string {
 
 func TestCreateBidRequiresIdempotencyKey(t *testing.T) {
 	ingress := &fakeBidIngress{}
-	handler := NewHandler(ingress, &fakeTokenService{})
+	handler := newTestHandler(ingress, &fakeTokenService{})
 	auctionID := uuid.NewString()
 
 	recorder := httptest.NewRecorder()
@@ -112,7 +116,7 @@ func TestCreateBidRequiresIdempotencyKey(t *testing.T) {
 
 func TestCreateBidRequiresBuyerRole(t *testing.T) {
 	ingress := &fakeBidIngress{}
-	handler := NewHandler(ingress, &fakeTokenService{})
+	handler := newTestHandler(ingress, &fakeTokenService{})
 	auctionID := uuid.NewString()
 
 	recorder := httptest.NewRecorder()
@@ -129,7 +133,7 @@ func TestCreateBidRequiresBuyerRole(t *testing.T) {
 
 func TestCreateBidReturnsPendingOnSuccess(t *testing.T) {
 	ingress := &fakeBidIngress{}
-	handler := NewHandler(ingress, &fakeTokenService{})
+	handler := newTestHandler(ingress, &fakeTokenService{})
 	auctionID := uuid.NewString()
 	buyerID := uuid.NewString()
 
@@ -158,7 +162,7 @@ func TestCreateBidReturnsPendingOnSuccess(t *testing.T) {
 
 func TestCreateBidReturns503WhenKafkaUnavailable(t *testing.T) {
 	ingress := &fakeBidIngress{err: errors.New("kafka unavailable")}
-	handler := NewHandler(ingress, &fakeTokenService{})
+	handler := newTestHandler(ingress, &fakeTokenService{})
 	auctionID := uuid.NewString()
 
 	recorder := httptest.NewRecorder()
@@ -173,7 +177,7 @@ func TestCreateBidReturns503WhenKafkaUnavailable(t *testing.T) {
 
 func TestCreateBidRequiresAuthentication(t *testing.T) {
 	ingress := &fakeBidIngress{}
-	handler := NewHandler(ingress, &fakeTokenService{})
+	handler := newTestHandler(ingress, &fakeTokenService{})
 	auctionID := uuid.NewString()
 
 	recorder := httptest.NewRecorder()
@@ -189,7 +193,7 @@ func TestCreateBidRequiresAuthentication(t *testing.T) {
 
 func TestCreateBidRejectsMalformedBody(t *testing.T) {
 	ingress := &fakeBidIngress{}
-	handler := NewHandler(ingress, &fakeTokenService{})
+	handler := newTestHandler(ingress, &fakeTokenService{})
 	auctionID := uuid.NewString()
 
 	recorder := httptest.NewRecorder()
