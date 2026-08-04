@@ -7,6 +7,9 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/example/auction/packages/auth"
 	"github.com/example/auction/packages/config"
@@ -31,7 +34,10 @@ func main() {
 		Path:     "/user_db",
 		RawQuery: "sslmode=disable",
 	}).String()
-	ctx := context.Background()
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	pool, err := postgres.Open(ctx, dsn)
 	if err != nil {
 		slog.Error("open postgres", "error", err)
@@ -48,10 +54,20 @@ func main() {
 		os.Exit(1)
 	}
 	service := NewUserService(NewRepository(pool), auth.NewPasswordService(), tokens)
-	server := &http.Server{Addr: fmt.Sprintf(":%d", servicePort(cfg)), Handler: observability.Middleware(slog.Default())(NewHandler(service))}
+
+	health := []observability.HealthCheck{
+		{Name: "postgres", Check: func(ctx context.Context) error { return pool.Ping(ctx) }},
+	}
+	server := &http.Server{
+		Addr:    fmt.Sprintf(":%d", servicePort(cfg)),
+		Handler: observability.WithHealth(observability.Middleware(slog.Default())(NewHandler(service)), health),
+	}
 	slog.Info("user service listening", "addr", server.Addr)
-	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		slog.Error("serve user service", "error", err)
+
+	if err := observability.Run(ctx, func(ctx context.Context) error {
+		return observability.RunServer(ctx, server, 10*time.Second)
+	}); err != nil {
+		slog.Error("run user service", "error", err)
 		os.Exit(1)
 	}
 }

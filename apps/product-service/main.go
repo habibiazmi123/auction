@@ -7,7 +7,10 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/example/auction/packages/auth"
 	"github.com/example/auction/packages/config"
@@ -38,7 +41,10 @@ func main() {
 		Path:     "/product_db",
 		RawQuery: "sslmode=disable",
 	}).String()
-	ctx := context.Background()
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	pool, err := postgres.Open(ctx, dsn)
 	if err != nil {
 		slog.Error("open postgres", "error", err)
@@ -56,16 +62,25 @@ func main() {
 	}
 	producer := kafka.NewProducer(kafka.ProducerConfig{Brokers: cfg.KafkaBrokers})
 	defer producer.Close()
-	go func() {
-		if err := postgres.NewOutboxRelay(pool, producer).Run(ctx); err != nil {
-			slog.Error("run product outbox relay", "error", err)
-		}
-	}()
+
+	relay := postgres.NewOutboxRelay(pool, producer)
 	service := NewProductService(NewRepository(pool))
-	server := &http.Server{Addr: fmt.Sprintf(":%d", servicePort(cfg)), Handler: observability.Middleware(slog.Default())(NewHandler(service, tokens, internalCredential))}
+
+	health := []observability.HealthCheck{
+		{Name: "postgres", Check: func(ctx context.Context) error { return pool.Ping(ctx) }},
+		{Name: "kafka", Check: func(ctx context.Context) error { return kafka.CheckConnectivity(ctx, cfg.KafkaBrokers) }},
+	}
+	server := &http.Server{
+		Addr:    fmt.Sprintf(":%d", servicePort(cfg)),
+		Handler: observability.WithHealth(observability.Middleware(slog.Default())(NewHandler(service, tokens, internalCredential)), health),
+	}
 	slog.Info("product service listening", "addr", server.Addr)
-	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		slog.Error("serve product service", "error", err)
+
+	if err := observability.Run(ctx,
+		func(ctx context.Context) error { return observability.RunServer(ctx, server, 10*time.Second) },
+		func(ctx context.Context) error { return relay.Run(ctx) },
+	); err != nil {
+		slog.Error("run product service", "error", err)
 		os.Exit(1)
 	}
 }

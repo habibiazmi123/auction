@@ -2,6 +2,8 @@ package kafka
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"time"
 
 	"github.com/segmentio/kafka-go"
@@ -40,3 +42,25 @@ func (p *Producer) Publish(ctx context.Context, topic, key string, value []byte)
 }
 
 func (p *Producer) Close() error { return p.writer.Close() }
+
+// CheckConnectivity attempts to dial at least one broker. It returns an error
+// if none of the configured brokers are reachable.
+func CheckConnectivity(ctx context.Context, brokers []string) error {
+	if len(brokers) == 0 {
+		return errors.New("no brokers configured")
+	}
+	var lastErr error
+	for _, broker := range brokers {
+		if broker == "" {
+			continue
+		}
+		conn, err := kafka.DialContext(ctx, "tcp", broker)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		_ = conn.Close()
+		return nil
+	}
+	return fmt.Errorf("kafka connectivity check failed: %w", lastErr)
+}

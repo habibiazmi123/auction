@@ -40,7 +40,7 @@ func issueTestToken(t *testing.T, tokens auth.TokenService, userID, role string)
 func TestGatewayWebSocketRejectsWithoutJWT(t *testing.T) {
 	tokens := testTokens(t)
 	hub := newTestHub()
-	handler := NewHandler(&fakeBidIngress{}, tokens, hub, "", nil, nil)
+	handler := NewHandler(&fakeBidIngress{}, tokens, hub, ServiceTargets{}, "", nil, nil)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
@@ -55,7 +55,7 @@ func TestGatewayWebSocketRejectsWithoutJWT(t *testing.T) {
 func TestGatewayWebSocketAuthenticatedHandshake(t *testing.T) {
 	tokens := testTokens(t)
 	hub := newTestHub()
-	handler := NewHandler(&fakeBidIngress{}, tokens, hub, "", nil, nil)
+	handler := NewHandler(&fakeBidIngress{}, tokens, hub, ServiceTargets{}, "", nil, nil)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
@@ -90,7 +90,7 @@ func TestGatewayEventFanoutIsolatesByAuction(t *testing.T) {
 
 	tokens := testTokens(t)
 	hub := newTestHub()
-	handler := NewHandler(&fakeBidIngress{}, tokens, hub, "", nil, nil)
+	handler := NewHandler(&fakeBidIngress{}, tokens, hub, ServiceTargets{}, "", nil, nil)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
@@ -151,7 +151,7 @@ func TestGatewayHeartbeatCleansUpDeadConnection(t *testing.T) {
 
 	tokens := testTokens(t)
 	hub := newTestHub()
-	handler := NewHandler(&fakeBidIngress{}, tokens, hub, "", nil, nil)
+	handler := NewHandler(&fakeBidIngress{}, tokens, hub, ServiceTargets{}, "", nil, nil)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
@@ -189,7 +189,7 @@ func TestGatewayReconnectResubscribes(t *testing.T) {
 
 	tokens := testTokens(t)
 	hub := newTestHub()
-	handler := NewHandler(&fakeBidIngress{}, tokens, hub, "", nil, nil)
+	handler := NewHandler(&fakeBidIngress{}, tokens, hub, ServiceTargets{}, "", nil, nil)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
@@ -241,7 +241,7 @@ func TestGatewayAuctionLimitRejectsExcessSubscriptions(t *testing.T) {
 	tokens := testTokens(t)
 	hub := newTestHub()
 	hub.maxPerAuction = 1
-	handler := NewHandler(&fakeBidIngress{}, tokens, hub, "", nil, nil)
+	handler := NewHandler(&fakeBidIngress{}, tokens, hub, ServiceTargets{}, "", nil, nil)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
@@ -276,6 +276,138 @@ func TestGatewayAuctionLimitRejectsExcessSubscriptions(t *testing.T) {
 	}
 }
 
+func TestGatewayProxyAuthRoutesToUserService(t *testing.T) {
+	var receivedPath string
+	userServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedPath = r.URL.Path
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer userServer.Close()
+
+	handler := NewHandler(&fakeBidIngress{}, nil, nil, ServiceTargets{User: userServer.URL}, "", nil, nil)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	resp, err := http.Get(server.URL + "/v1/auth/test")
+	if err != nil {
+		t.Fatalf("proxy auth: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	if receivedPath != "/v1/auth/test" {
+		t.Fatalf("expected path to be forwarded, got %q", receivedPath)
+	}
+}
+
+func TestGatewayProxyProductRoutesToProductService(t *testing.T) {
+	var receivedPath string
+	productServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedPath = r.URL.Path
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer productServer.Close()
+
+	tokens := testTokens(t)
+	handler := NewHandler(&fakeBidIngress{}, tokens, nil, ServiceTargets{Product: productServer.URL}, "", nil, nil)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	req, _ := http.NewRequest(http.MethodGet, server.URL+"/v1/products", nil)
+	req.Header.Set("Authorization", "Bearer "+issueTestToken(t, tokens, uuid.NewString(), "buyer"))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("proxy products: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	if receivedPath != "/v1/products" {
+		t.Fatalf("expected path to be forwarded, got %q", receivedPath)
+	}
+}
+
+func TestGatewayProxyAuctionRoutesToAuctionService(t *testing.T) {
+	var receivedPath string
+	auctionServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedPath = r.URL.Path
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer auctionServer.Close()
+
+	tokens := testTokens(t)
+	handler := NewHandler(&fakeBidIngress{}, tokens, nil, ServiceTargets{Auction: auctionServer.URL}, "", nil, nil)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	req, _ := http.NewRequest(http.MethodGet, server.URL+"/v1/auctions", nil)
+	req.Header.Set("Authorization", "Bearer "+issueTestToken(t, tokens, uuid.NewString(), "buyer"))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("proxy auctions: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	if receivedPath != "/v1/auctions" {
+		t.Fatalf("expected path to be forwarded, got %q", receivedPath)
+	}
+}
+
+func TestGatewayProxySettlementRoutesToTransactionService(t *testing.T) {
+	var receivedPath string
+	transactionServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedPath = r.URL.Path
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer transactionServer.Close()
+
+	tokens := testTokens(t)
+	auctionID := uuid.NewString()
+	handler := NewHandler(&fakeBidIngress{}, tokens, nil, ServiceTargets{Transaction: transactionServer.URL}, "", nil, nil)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	req, _ := http.NewRequest(http.MethodGet, server.URL+"/v1/auctions/"+auctionID+"/settlement", nil)
+	req.Header.Set("Authorization", "Bearer "+issueTestToken(t, tokens, uuid.NewString(), "buyer"))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("proxy settlement: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	if receivedPath != "/v1/auctions/"+auctionID+"/settlement" {
+		t.Fatalf("expected path to be forwarded, got %q", receivedPath)
+	}
+}
+
+func TestGatewayRejectsExternalInternalHeader(t *testing.T) {
+	userServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("upstream should not be called")
+	}))
+	defer userServer.Close()
+
+	handler := NewHandler(&fakeBidIngress{}, nil, nil, ServiceTargets{User: userServer.URL}, "", nil, nil)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	req, _ := http.NewRequest(http.MethodGet, server.URL+"/v1/auth/test", nil)
+	req.Header.Set("X-User-ID", "attacker")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", resp.StatusCode)
+	}
+}
+
 func TestGatewayProxyNotificationsForwardsUserID(t *testing.T) {
 	tokens := testTokens(t)
 	var receivedUserID string
@@ -287,7 +419,7 @@ func TestGatewayProxyNotificationsForwardsUserID(t *testing.T) {
 	}))
 	defer notificationServer.Close()
 
-	handler := NewHandler(&fakeBidIngress{}, tokens, nil, notificationServer.URL, nil, nil)
+	handler := NewHandler(&fakeBidIngress{}, tokens, nil, ServiceTargets{Notification: notificationServer.URL}, "", nil, nil)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
@@ -321,7 +453,7 @@ func TestGatewayNamespaceIsolatesAuctionFromNotifications(t *testing.T) {
 
 	tokens := testTokens(t)
 	hub := newTestHub()
-	handler := NewHandler(&fakeBidIngress{}, tokens, hub, "", nil, nil)
+	handler := NewHandler(&fakeBidIngress{}, tokens, hub, ServiceTargets{}, "", nil, nil)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
@@ -383,7 +515,7 @@ func TestHubPublishNoRaceOnClose(t *testing.T) {
 
 	tokens := testTokens(t)
 	hub := newTestHub()
-	handler := NewHandler(&fakeBidIngress{}, tokens, hub, "", nil, nil)
+	handler := NewHandler(&fakeBidIngress{}, tokens, hub, ServiceTargets{}, "", nil, nil)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 

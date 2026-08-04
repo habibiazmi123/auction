@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/example/auction/packages/config"
 	"github.com/example/auction/packages/kafka"
@@ -33,7 +35,10 @@ func main() {
 		Path:     "/transaction_db",
 		RawQuery: "sslmode=disable",
 	}).String()
-	ctx := context.Background()
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	pool, err := postgrespkg.Open(ctx, dsn)
 	if err != nil {
 		slog.Error("open postgres", "error", err)
@@ -49,12 +54,6 @@ func main() {
 	defer producer.Close()
 
 	relay := postgrespkg.NewOutboxRelay(pool, producer)
-	go func() {
-		if err := relay.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
-			slog.Error("outbox relay stopped", "error", err)
-		}
-	}()
-
 	repository := NewSettlementRepository(pool)
 	consumerConfig := kafka.ConsumerConfig{
 		Brokers:     cfg.KafkaBrokers,
@@ -62,19 +61,23 @@ func main() {
 		GroupID:     "transaction-service-close-events",
 		StartOffset: kafkago.FirstOffset,
 	}
-	go func() {
-		if err := RunCloseEventConsumer(ctx, consumerConfig, repository); err != nil && !errors.Is(err, context.Canceled) {
-			slog.Error("close event consumer stopped", "error", err)
-		}
-	}()
 
+	health := []observability.HealthCheck{
+		{Name: "postgres", Check: func(ctx context.Context) error { return pool.Ping(ctx) }},
+		{Name: "kafka", Check: func(ctx context.Context) error { return kafka.CheckConnectivity(ctx, cfg.KafkaBrokers) }},
+	}
 	server := &http.Server{
 		Addr:    fmt.Sprintf(":%d", servicePort(cfg)),
-		Handler: observability.Middleware(slog.Default())(NewHandler(repository)),
+		Handler: observability.WithHealth(observability.Middleware(slog.Default())(NewHandler(repository)), health),
 	}
 	slog.Info("transaction service listening", "addr", server.Addr)
-	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		slog.Error("serve transaction service", "error", err)
+
+	if err := observability.Run(ctx,
+		func(ctx context.Context) error { return observability.RunServer(ctx, server, 10*time.Second) },
+		func(ctx context.Context) error { return relay.Run(ctx) },
+		func(ctx context.Context) error { return RunCloseEventConsumer(ctx, consumerConfig, repository) },
+	); err != nil {
+		slog.Error("run transaction service", "error", err)
 		os.Exit(1)
 	}
 }

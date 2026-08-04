@@ -3,13 +3,14 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/example/auction/packages/auth"
@@ -43,7 +44,10 @@ func main() {
 		Path:     "/auction_db",
 		RawQuery: "sslmode=disable",
 	}).String()
-	ctx := context.Background()
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	pool, err := postgres.Open(ctx, dsn)
 	if err != nil {
 		slog.Error("open postgres", "error", err)
@@ -71,12 +75,6 @@ func main() {
 	defer producer.Close()
 
 	relay := NewOutboxRelay(pool, producer)
-	go func() {
-		if err := relay.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
-			slog.Error("outbox relay stopped", "error", err)
-		}
-	}()
-
 	processor := NewBidProcessor(repository)
 	consumer := kafka.NewConsumer(kafka.ConsumerConfig{
 		Brokers:     cfg.KafkaBrokers,
@@ -85,40 +83,51 @@ func main() {
 		StartOffset: kafkago.FirstOffset,
 	})
 	defer consumer.Close()
-	go func() {
-		if err := consumer.Run(ctx, func(ctx context.Context, message kafka.Message) error {
-			var command contracts.BidCommand
-			if err := json.Unmarshal(message.Payload, &command); err != nil {
-				slog.WarnContext(ctx, "drop malformed bid command", "error", err)
-				return nil
-			}
-			return processor.Handle(ctx, command)
-		}); err != nil && !errors.Is(err, context.Canceled) {
-			slog.Error("bid consumer stopped", "error", err)
-		}
-	}()
 
 	closer := NewAuctionCloser(repository)
-	go func() {
-		ticker := time.NewTicker(time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				if _, err := closer.CloseDue(ctx, time.Now().UTC()); err != nil {
-					slog.Error("close due run failed", "error", err)
+
+	health := []observability.HealthCheck{
+		{Name: "postgres", Check: func(ctx context.Context) error { return pool.Ping(ctx) }},
+		{Name: "kafka", Check: func(ctx context.Context) error { return kafka.CheckConnectivity(ctx, cfg.KafkaBrokers) }},
+	}
+	server := &http.Server{
+		Addr:    fmt.Sprintf(":%d", servicePort(cfg)),
+		Handler: observability.WithHealth(observability.Middleware(slog.Default())(NewHandler(service, tokens)), health),
+	}
+	slog.Info("auction service listening", "addr", server.Addr)
+
+	if err := observability.Run(ctx,
+		func(ctx context.Context) error { return observability.RunServer(ctx, server, 10*time.Second) },
+		func(ctx context.Context) error { return relay.Run(ctx) },
+		func(ctx context.Context) error {
+			return consumer.Run(ctx, func(ctx context.Context, message kafka.Message) error {
+				var command contracts.BidCommand
+				if err := json.Unmarshal(message.Payload, &command); err != nil {
+					slog.WarnContext(ctx, "drop malformed bid command", "error", err)
+					return nil
 				}
+				return processor.Handle(ctx, command)
+			})
+		},
+		func(ctx context.Context) error { return runCloser(ctx, closer) },
+	); err != nil {
+		slog.Error("run auction service", "error", err)
+		os.Exit(1)
+	}
+}
+
+func runCloser(ctx context.Context, closer AuctionCloser) error {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+			if _, err := closer.CloseDue(ctx, time.Now().UTC()); err != nil {
+				slog.Error("close due run failed", "error", err)
 			}
 		}
-	}()
-
-	server := &http.Server{Addr: fmt.Sprintf(":%d", servicePort(cfg)), Handler: observability.Middleware(slog.Default())(NewHandler(service, tokens))}
-	slog.Info("auction service listening", "addr", server.Addr)
-	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		slog.Error("serve auction service", "error", err)
-		os.Exit(1)
 	}
 }
 

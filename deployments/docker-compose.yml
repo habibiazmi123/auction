@@ -28,6 +28,7 @@ services:
       KAFKA_CFG_ADVERTISED_LISTENERS: INTERNAL://kafka:9092,EXTERNAL://localhost:${KAFKA_PORT:-9094}
       KAFKA_CFG_INTER_BROKER_LISTENER_NAME: INTERNAL
       KAFKA_CFG_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE: "true"
       ALLOW_PLAINTEXT_LISTENER: "yes"
       KAFKA_BROKERS: ${KAFKA_BROKERS:?set KAFKA_BROKERS}
       KAFKA_TOPIC_PARTITIONS: ${KAFKA_TOPIC_PARTITIONS:-64}
@@ -60,6 +61,151 @@ services:
       interval: 10s
       timeout: 5s
       retries: 12
+    networks:
+      - auction
+
+  api-gateway:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        SERVICE: api-gateway
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_PORT: ${POSTGRES_PORT}
+      KAFKA_BROKERS: kafka:9092
+      JWT_SECRET: ${JWT_SECRET}
+      API_GATEWAY_PORT: 8080
+      USER_SERVICE_URL: http://user-service:8081
+      PRODUCT_SERVICE_URL: http://product-service:8082
+      AUCTION_SERVICE_URL: http://auction-service:8083
+      TRANSACTION_SERVICE_URL: http://transaction-service:8084
+      NOTIFICATION_SERVICE_URL: http://notification-service:8085
+      SMOKE_CLIENT_DIR: /var/lib/smoke-client
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-}
+    ports:
+      - "${API_GATEWAY_PORT:-8080}:8080"
+    volumes:
+      - ../smoke-client:/var/lib/smoke-client:ro
+    depends_on:
+      kafka:
+        condition: service_healthy
+    networks:
+      - auction
+
+  user-service:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        SERVICE: user-service
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      KAFKA_BROKERS: kafka:9092
+      JWT_SECRET: ${JWT_SECRET}
+      USER_SERVICE_PORT: 8081
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    networks:
+      - auction
+
+  product-service:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        SERVICE: product-service
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      KAFKA_BROKERS: kafka:9092
+      JWT_SECRET: ${JWT_SECRET}
+      INTERNAL_SERVICE_CREDENTIAL: ${INTERNAL_SERVICE_CREDENTIAL:-internal-secret}
+      PRODUCT_SERVICE_PORT: 8082
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    networks:
+      - auction
+
+  auction-service:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        SERVICE: auction-service
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      KAFKA_BROKERS: kafka:9092
+      JWT_SECRET: ${JWT_SECRET}
+      INTERNAL_SERVICE_CREDENTIAL: ${INTERNAL_SERVICE_CREDENTIAL:-internal-secret}
+      PRODUCT_SERVICE_URL: http://product-service:8082
+      AUCTION_SERVICE_PORT: 8083
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      product-service:
+        condition: service_started
+    networks:
+      - auction
+
+  transaction-service:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        SERVICE: transaction-service
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      KAFKA_BROKERS: kafka:9092
+      JWT_SECRET: ${JWT_SECRET}
+      TRANSACTION_SERVICE_PORT: 8084
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    networks:
+      - auction
+
+  notification-service:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        SERVICE: notification-service
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      KAFKA_BROKERS: kafka:9092
+      JWT_SECRET: ${JWT_SECRET}
+      NOTIFICATION_SERVICE_PORT: 8085
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
     networks:
       - auction
 

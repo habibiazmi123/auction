@@ -7,7 +7,9 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/example/auction/packages/auth"
@@ -31,7 +33,9 @@ func main() {
 	producer := kafka.NewProducer(kafka.ProducerConfig{Brokers: cfg.KafkaBrokers})
 	defer producer.Close()
 
-	ctx := context.Background()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	hub := NewHub()
 
 	publicEventConfig := kafka.ConsumerConfig{
@@ -40,39 +44,50 @@ func main() {
 		GroupID:     "api-gateway-public-events",
 		StartOffset: kafkago.FirstOffset,
 	}
-	go func() {
-		if err := hub.RunPublicEventConsumer(ctx, publicEventConfig); err != nil && !errors.Is(err, context.Canceled) {
-			slog.Error("public event consumer stopped", "error", err)
-		}
-	}()
-
 	notificationConfig := kafka.ConsumerConfig{
 		Brokers:     cfg.KafkaBrokers,
 		Topic:       "notification.events.v1",
 		GroupID:     "api-gateway-notifications",
 		StartOffset: kafkago.FirstOffset,
 	}
-	go func() {
-		if err := hub.RunNotificationConsumer(ctx, notificationConfig); err != nil && !errors.Is(err, context.Canceled) {
-			slog.Error("notification consumer stopped", "error", err)
-		}
-	}()
 
-	notificationURL := strings.TrimSpace(os.Getenv("NOTIFICATION_SERVICE_URL"))
-	if notificationURL == "" {
-		notificationURL = "http://localhost:8085"
+	targets := ServiceTargets{
+		User:         envOrDefault("USER_SERVICE_URL", "http://localhost:8081"),
+		Product:      envOrDefault("PRODUCT_SERVICE_URL", "http://localhost:8082"),
+		Auction:      envOrDefault("AUCTION_SERVICE_URL", "http://localhost:8083"),
+		Transaction:  envOrDefault("TRANSACTION_SERVICE_URL", "http://localhost:8084"),
+		Notification: envOrDefault("NOTIFICATION_SERVICE_URL", "http://localhost:8085"),
 	}
+	smokeClientDir := envOrDefault("SMOKE_CLIENT_DIR", "./smoke-client")
 
+	health := []observability.HealthCheck{
+		{Name: "kafka", Check: func(ctx context.Context) error { return kafka.CheckConnectivity(ctx, cfg.KafkaBrokers) }},
+	}
 	server := &http.Server{
-		Addr:              fmt.Sprintf(":%d", gatewayPort(cfg)),
-		Handler:           observability.Middleware(slog.Default())(NewHandler(NewBidIngress(producer), tokens, hub, notificationURL, cfg.AllowedOrigins, &http.Client{Timeout: 5 * time.Second})),
+		Addr: fmt.Sprintf(":%d", gatewayPort(cfg)),
+		Handler: observability.WithHealth(
+			observability.Middleware(slog.Default())(NewHandler(NewBidIngress(producer), tokens, hub, targets, smokeClientDir, cfg.AllowedOrigins, &http.Client{Timeout: 5 * time.Second})),
+			health,
+		),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	slog.Info("api gateway listening", "addr", server.Addr)
-	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		slog.Error("serve api gateway", "error", err)
+
+	if err := observability.Run(ctx,
+		func(ctx context.Context) error { return observability.RunServer(ctx, server, 10*time.Second) },
+		func(ctx context.Context) error { return hub.RunPublicEventConsumer(ctx, publicEventConfig) },
+		func(ctx context.Context) error { return hub.RunNotificationConsumer(ctx, notificationConfig) },
+	); err != nil && !errors.Is(err, context.Canceled) {
+		slog.Error("run api gateway", "error", err)
 		os.Exit(1)
 	}
+}
+
+func envOrDefault(key, defaultValue string) string {
+	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+		return value
+	}
+	return defaultValue
 }
 
 func gatewayPort(cfg config.Config) int {

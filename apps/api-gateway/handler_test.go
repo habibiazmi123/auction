@@ -53,7 +53,7 @@ func issueGatewayToken(t *testing.T, role string, id string) string {
 }
 
 func newTestHandler(ingress BidIngress, tokens auth.TokenService) *Handler {
-	return NewHandler(ingress, tokens, nil, "", nil, nil)
+	return NewHandler(ingress, tokens, nil, ServiceTargets{}, "", nil, nil)
 }
 
 func TestCreateBidRequiresUUIDAuctionID(t *testing.T) {

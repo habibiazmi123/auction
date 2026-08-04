@@ -8,6 +8,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/example/auction/packages/auth"
 	"github.com/example/auction/packages/contracts"
@@ -38,38 +39,59 @@ func (b *bidIngress) Publish(ctx context.Context, command contracts.BidCommand) 
 	return b.producer.Publish(ctx, b.topic, command.AuctionID, payload)
 }
 
-type Handler struct {
-	ingress             BidIngress
-	tokens              auth.TokenService
-	hub                 *Hub
-	notificationURL     string
-	notificationProxy   *httputil.ReverseProxy
-	allowedOrigins      []string
-	httpClient          *http.Client
+// ServiceTargets holds the upstream service URLs used by the gateway proxy.
+type ServiceTargets struct {
+	User         string
+	Product      string
+	Auction      string
+	Transaction  string
+	Notification string
 }
 
-func NewHandler(ingress BidIngress, tokens auth.TokenService, hub *Hub, notificationURL string, allowedOrigins []string, httpClient *http.Client) *Handler {
+type Handler struct {
+	ingress           BidIngress
+	tokens            auth.TokenService
+	hub               *Hub
+	proxies           map[string]*httputil.ReverseProxy
+	smokeClient       http.Handler
+	allowedOrigins    []string
+	httpClient        *http.Client
+}
+
+func NewHandler(ingress BidIngress, tokens auth.TokenService, hub *Hub, targets ServiceTargets, smokeClientDir string, allowedOrigins []string, httpClient *http.Client) *Handler {
 	if httpClient == nil {
-		httpClient = http.DefaultClient
+		httpClient = &http.Client{Timeout: 5 * time.Second}
 	}
-	var notificationProxy *httputil.ReverseProxy
-	if notificationURL != "" {
-		if target, err := url.Parse(notificationURL); err == nil {
-			notificationProxy = httputil.NewSingleHostReverseProxy(target)
-			notificationProxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
-				writeProblem(w, r, http.StatusServiceUnavailable, "notification_unavailable", "notification service unavailable")
-			}
-			notificationProxy.Transport = httpClient.Transport
+	if httpClient.Timeout <= 0 {
+		httpClient.Timeout = 5 * time.Second
+	}
+	proxies := make(map[string]*httputil.ReverseProxy)
+	for name, target := range map[string]string{
+		"user":         targets.User,
+		"product":      targets.Product,
+		"auction":      targets.Auction,
+		"transaction":  targets.Transaction,
+		"notification": targets.Notification,
+	} {
+		if target == "" {
+			continue
+		}
+		if u, err := url.Parse(target); err == nil {
+			proxies[name] = newReverseProxy(u, httpClient)
 		}
 	}
+	var smokeClient http.Handler
+	if smokeClientDir != "" {
+		smokeClient = http.FileServer(http.Dir(smokeClientDir))
+	}
 	return &Handler{
-		ingress:           ingress,
-		tokens:            tokens,
-		hub:               hub,
-		notificationURL:   notificationURL,
-		notificationProxy: notificationProxy,
-		allowedOrigins:    allowedOrigins,
-		httpClient:        httpClient,
+		ingress:        ingress,
+		tokens:         tokens,
+		hub:            hub,
+		proxies:        proxies,
+		smokeClient:    smokeClient,
+		allowedOrigins: allowedOrigins,
+		httpClient:     httpClient,
 	}
 }
 
@@ -91,6 +113,10 @@ type bidIngressResponse struct {
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if h.smokeClient != nil && !strings.HasPrefix(r.URL.Path, "/v1/") && !strings.HasPrefix(r.URL.Path, "/health/") {
+		h.smokeClient.ServeHTTP(w, r)
+		return
+	}
 	if r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/v1/auctions/") && strings.HasSuffix(r.URL.Path, "/bids") {
 		h.createBid(w, r)
 		return
@@ -104,10 +130,57 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method == http.MethodGet && r.URL.Path == "/v1/notifications" {
-		h.proxyNotifications(w, r)
+		h.proxyService(w, r, "notification", true)
+		return
+	}
+	if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/auctions/") && strings.HasSuffix(r.URL.Path, "/settlement") {
+		h.proxyService(w, r, "transaction", true)
+		return
+	}
+	if strings.HasPrefix(r.URL.Path, "/v1/auth/") {
+		h.proxyService(w, r, "user", false)
+		return
+	}
+	if strings.HasPrefix(r.URL.Path, "/v1/products") {
+		h.proxyService(w, r, "product", true)
+		return
+	}
+	if strings.HasPrefix(r.URL.Path, "/v1/auctions") {
+		h.proxyService(w, r, "auction", true)
 		return
 	}
 	writeProblem(w, r, http.StatusNotFound, "not_found", "route not found")
+}
+
+func (h *Handler) proxyService(w http.ResponseWriter, r *http.Request, name string, requiresAuth bool) {
+	proxy, ok := h.proxies[name]
+	if !ok {
+		writeProblem(w, r, http.StatusServiceUnavailable, "dependency_unavailable", name+" service unavailable")
+		return
+	}
+	if hasInternalHeader(r) {
+		writeProblem(w, r, http.StatusBadRequest, "invalid_input", "reserved internal header")
+		return
+	}
+	if requiresAuth {
+		principal, ok := h.authenticate(w, r)
+		if !ok {
+			return
+		}
+		r.Header.Set("X-User-ID", principal.ID)
+	}
+	r.Header.Set("X-Request-ID", observability.RequestID(r.Context()))
+	r.Header.Set("X-Correlation-ID", observability.CorrelationID(r.Context()))
+	proxy.ServeHTTP(w, r)
+}
+
+func hasInternalHeader(r *http.Request) bool {
+	for _, header := range []string{"X-User-ID", "X-Internal-Service-Credential", "X-Internal-Service-Token", "X-Request-ID", "X-Correlation-ID"} {
+		if r.Header.Get(header) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *Handler) createBid(w http.ResponseWriter, r *http.Request) {
@@ -269,19 +342,6 @@ func (h *Handler) acceptWebSocket(w http.ResponseWriter, r *http.Request, subpro
 	return conn, nil
 }
 
-func (h *Handler) proxyNotifications(w http.ResponseWriter, r *http.Request) {
-	principal, ok := h.authenticate(w, r)
-	if !ok {
-		return
-	}
-	if h.notificationProxy == nil {
-		writeProblem(w, r, http.StatusInternalServerError, "internal_error", "notification proxy misconfigured")
-		return
-	}
-	r.Header.Set("X-User-ID", principal.ID)
-	h.notificationProxy.ServeHTTP(w, r)
-}
-
 func auctionIDFromLivePath(path string) (uuid.UUID, bool) {
 	value := strings.TrimPrefix(strings.TrimSuffix(path, "/live"), "/v1/auctions/")
 	if value == "" || strings.Contains(value, "/") {
@@ -302,3 +362,28 @@ func writeProblem(w http.ResponseWriter, r *http.Request, status int, code, mess
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(problemResponse{Code: code, Message: message, RequestID: observability.RequestID(r.Context())})
 }
+
+func newReverseProxy(target *url.URL, client *http.Client) *httputil.ReverseProxy {
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
+		writeProblem(w, r, http.StatusServiceUnavailable, "dependency_unavailable", "upstream service unavailable")
+	}
+	transport := client.Transport
+	if transport == nil {
+		transport = http.DefaultTransport
+	}
+	proxy.Transport = &timeoutTransport{base: transport, timeout: client.Timeout}
+	return proxy
+}
+
+type timeoutTransport struct {
+	base    http.RoundTripper
+	timeout time.Duration
+}
+
+func (t *timeoutTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	ctx, cancel := context.WithTimeout(req.Context(), t.timeout)
+	defer cancel()
+	return t.base.RoundTrip(req.WithContext(ctx))
+}
+
