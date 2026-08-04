@@ -1,0 +1,8 @@
+.git
+.gitignore
+.env
+.worktrees
+.superpowers
+tmp
+coverage.out
+*.log
