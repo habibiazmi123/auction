@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -18,19 +19,21 @@ const (
 )
 
 var (
-	ErrAuctionNotFound     = errors.New("auction not found")
-	ErrInvalidAuction      = errors.New("invalid auction")
-	ErrAuctionNotLive      = errors.New("auction is not live")
-	ErrAuctionNotScheduled = errors.New("auction is not scheduled")
-	ErrAuctionNotStarted   = errors.New("auction has not started")
-	ErrAuctionEnded        = errors.New("auction has ended")
-	ErrAuctionNotEnded     = errors.New("auction has not ended")
-	ErrBidTooLow           = errors.New("bid is below the minimum")
-	ErrSellerCannotBid     = errors.New("seller cannot bid")
-	ErrAuctionConflict     = errors.New("auction conflicts with an existing auction")
-	ErrProductNotFound     = errors.New("product not found")
-	ErrProductNotOwner     = errors.New("seller does not own product")
-	ErrProductUnavailable  = errors.New("product is not available")
+	ErrAuctionNotFound        = errors.New("auction not found")
+	ErrInvalidAuction         = errors.New("invalid auction")
+	ErrAuctionNotLive         = errors.New("auction is not live")
+	ErrAuctionNotScheduled    = errors.New("auction is not scheduled")
+	ErrAuctionNotStarted      = errors.New("auction has not started")
+	ErrAuctionEnded           = errors.New("auction has ended")
+	ErrAuctionNotEnded        = errors.New("auction has not ended")
+	ErrBidTooLow              = errors.New("bid is below the minimum")
+	ErrSellerCannotBid        = errors.New("seller cannot bid")
+	ErrAuctionConflict        = errors.New("auction conflicts with an existing auction")
+	ErrAuctionVersionConflict = errors.New("auction version conflict")
+	ErrProductNotFound        = errors.New("product not found")
+	ErrProductNotOwner        = errors.New("seller does not own product")
+	ErrProductAuth            = errors.New("product service authorization failed")
+	ErrProductUnavailable     = errors.New("product is not available")
 )
 
 type Auction struct {
@@ -96,7 +99,7 @@ type AuctionService interface {
 type AuctionRules struct{}
 
 func NewAuction(sellerID uuid.UUID, product ProductSnapshot, input CreateAuctionInput, now time.Time) (Auction, error) {
-	if sellerID == uuid.Nil || product.ID == uuid.Nil || product.SellerID != sellerID || product.Status != "available" || input.ProductID != product.ID || !validAuctionInput(input) {
+	if sellerID == uuid.Nil || !validProductSnapshot(product) || product.SellerID != sellerID || input.ProductID != product.ID || !validAuctionInput(input) {
 		return Auction{}, ErrInvalidAuction
 	}
 	return Auction{
@@ -128,6 +131,10 @@ func validAuctionInput(input CreateAuctionInput) bool {
 		return false
 	}
 	return input.StartingPriceCents <= math.MaxInt64-input.MinimumIncrementCents
+}
+
+func validProductSnapshot(product ProductSnapshot) bool {
+	return product.ID != uuid.Nil && product.SellerID != uuid.Nil && strings.TrimSpace(product.Name) != "" && strings.TrimSpace(product.Description) != "" && product.Quantity > 0 && product.Status == "available" && product.AuctionID == nil
 }
 
 func (r AuctionRules) Schedule(auction Auction, now time.Time) (Auction, error) {
@@ -174,6 +181,9 @@ func (r AuctionRules) Close(auction Auction, now time.Time) (Auction, error) {
 func (r AuctionRules) ValidateBid(auction Auction, bidderID uuid.UUID, amount int64, now time.Time) error {
 	if auction.Status != AuctionStatusLive || now.Before(auction.StartsAt) || !now.Before(auction.EndsAt) {
 		return ErrAuctionNotLive
+	}
+	if !validAuction(auction) {
+		return ErrInvalidAuction
 	}
 	if bidderID == uuid.Nil || bidderID == auction.SellerID {
 		return ErrSellerCannotBid
@@ -255,7 +265,13 @@ func (s *auctionService) Get(ctx context.Context, auctionID uuid.UUID) (AuctionV
 }
 
 func validAuction(auction Auction) bool {
-	return auction.ID != uuid.Nil && auction.ProductID != uuid.Nil && auction.SellerID != uuid.Nil && auction.StartsAt.Before(auction.EndsAt) && auction.StartingPriceCents >= 0 && auction.CurrentPriceCents >= 0 && auction.MinimumIncrementCents > 0 && auction.AntiSnipingWindowSeconds >= 0 && auction.AntiSnipingExtensionSeconds >= 0 && validSeconds(auction.AntiSnipingWindowSeconds) && validSeconds(auction.AntiSnipingExtensionSeconds)
+	if auction.ID == uuid.Nil || auction.ProductID == uuid.Nil || auction.SellerID == uuid.Nil || !auction.StartsAt.Before(auction.EndsAt) || auction.StartingPriceCents < 0 || auction.CurrentPriceCents < auction.StartingPriceCents || auction.MinimumIncrementCents <= 0 || auction.AntiSnipingWindowSeconds < 0 || auction.AntiSnipingExtensionSeconds < 0 || !validSeconds(auction.AntiSnipingWindowSeconds) || !validSeconds(auction.AntiSnipingExtensionSeconds) {
+		return false
+	}
+	if auction.CurrentWinnerID == nil {
+		return auction.CurrentPriceCents == auction.StartingPriceCents
+	}
+	return *auction.CurrentWinnerID != uuid.Nil && *auction.CurrentWinnerID != auction.SellerID
 }
 
 func validSeconds(value int64) bool { return value <= math.MaxInt64/int64(time.Second) }

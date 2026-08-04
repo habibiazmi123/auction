@@ -138,9 +138,13 @@ func writeServiceError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, ErrAuctionNotFound):
 		writeProblem(w, r, http.StatusNotFound, "not_found", "auction not found")
+	case errors.Is(err, ErrProductNotFound):
+		writeProblem(w, r, http.StatusNotFound, "not_found", "product not found")
+	case errors.Is(err, ErrProductNotOwner), errors.Is(err, ErrProductAuth):
+		writeProblem(w, r, http.StatusForbidden, "forbidden", "seller does not own product")
 	case errors.Is(err, ErrInvalidAuction):
 		writeProblem(w, r, http.StatusBadRequest, "invalid_input", "request contains invalid fields")
-	case errors.Is(err, ErrAuctionConflict), errors.Is(err, ErrProductNotFound), errors.Is(err, ErrProductNotOwner), errors.Is(err, ErrProductUnavailable), errors.Is(err, ErrAuctionNotLive), errors.Is(err, ErrAuctionNotScheduled), errors.Is(err, ErrAuctionNotStarted), errors.Is(err, ErrAuctionEnded), errors.Is(err, ErrAuctionNotEnded), errors.Is(err, ErrBidTooLow), errors.Is(err, ErrSellerCannotBid):
+	case errors.Is(err, ErrAuctionConflict), errors.Is(err, ErrProductUnavailable), errors.Is(err, ErrAuctionVersionConflict), errors.Is(err, ErrAuctionNotLive), errors.Is(err, ErrAuctionNotScheduled), errors.Is(err, ErrAuctionNotStarted), errors.Is(err, ErrAuctionEnded), errors.Is(err, ErrAuctionNotEnded), errors.Is(err, ErrBidTooLow), errors.Is(err, ErrSellerCannotBid):
 		writeProblem(w, r, http.StatusConflict, "auction_state_conflict", "auction cannot be changed in its current state")
 	default:
 		writeProblem(w, r, http.StatusInternalServerError, "internal_error", "internal server error")

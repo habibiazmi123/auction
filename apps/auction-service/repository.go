@@ -54,16 +54,34 @@ func (r *repository) Get(ctx context.Context, id uuid.UUID) (Auction, error) {
 }
 
 func (r *repository) Update(ctx context.Context, auction Auction) error {
-	result, err := r.pool.Exec(ctx, `
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin update auction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	previous, err := scanAuction(tx.QueryRow(ctx, auctionSelect+` WHERE id = $1 FOR UPDATE`, auction.ID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrAuctionNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("lock auction for update: %w", err)
+	}
+	if auction.Version != previous.Version {
+		return ErrAuctionVersionConflict
+	}
+	nextVersion, err := safeAdd(previous.Version, 1)
+	if err != nil {
+		return ErrInvalidAuction
+	}
+	if _, err := tx.Exec(ctx, `
 		UPDATE auctions SET status = $2, current_price_cents = $3, current_winner_id = $4,
 		ends_at = $5, version = $6, updated_at = $7
-		WHERE id = $1 AND version = $8`, auction.ID, auction.Status, auction.CurrentPriceCents,
-		auction.CurrentWinnerID, auction.EndsAt, auction.Version, auction.UpdatedAt, auction.Version-1)
-	if err != nil {
+		WHERE id = $1`, auction.ID, auction.Status, auction.CurrentPriceCents,
+		auction.CurrentWinnerID, auction.EndsAt, nextVersion, auction.UpdatedAt); err != nil {
 		return fmt.Errorf("update auction: %w", err)
 	}
-	if result.RowsAffected() == 0 {
-		return ErrAuctionNotFound
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit update auction: %w", err)
 	}
 	return nil
 }
@@ -165,6 +183,8 @@ func productResponseError(response *http.Response) error {
 	switch response.StatusCode {
 	case http.StatusNotFound:
 		return ErrProductNotFound
+	case http.StatusUnauthorized:
+		return ErrProductAuth
 	case http.StatusForbidden:
 		return ErrProductNotOwner
 	case http.StatusConflict:

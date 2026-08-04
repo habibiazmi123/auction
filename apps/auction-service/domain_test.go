@@ -14,7 +14,7 @@ func TestAuctionLifecycleTransitionsAndCloseIsIdempotent(t *testing.T) {
 	now := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
 	auction := Auction{
 		ID: uuid.New(), ProductID: uuid.New(), SellerID: uuid.New(), Status: AuctionStatusDraft, StartsAt: now.Add(time.Hour), EndsAt: now.Add(2 * time.Hour),
-		StartingPriceCents: 100, MinimumIncrementCents: 10,
+		StartingPriceCents: 100, CurrentPriceCents: 100, MinimumIncrementCents: 10,
 	}
 	rules := AuctionRules{}
 
@@ -126,9 +126,52 @@ func TestAuctionRulesRejectNegativeAndOverflowMoney(t *testing.T) {
 	}
 }
 
+func TestAuctionRulesRejectMalformedPriceAndWinnerState(t *testing.T) {
+
+	now := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
+	rules := AuctionRules{}
+
+	for _, test := range []struct {
+		name   string
+		price  int64
+		winner *uuid.UUID
+	}{
+		{name: "price below starting price", price: 99},
+		{name: "price above starting price without winner", price: 101},
+		{name: "nil winner id", price: 100, winner: uuidPtr(uuid.Nil)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			auction := liveAuction(now, uuid.New())
+			auction.CurrentPriceCents, auction.CurrentWinnerID = test.price, test.winner
+			if err := rules.ValidateBid(auction, uuid.New(), 100, now); !errors.Is(err, ErrInvalidAuction) {
+				t.Fatalf("error: got %v want %v", err, ErrInvalidAuction)
+			}
+		})
+	}
+}
+
+func TestAuctionServiceValidatesSnapshotBeforeLock(t *testing.T) {
+	productID, sellerID := uuid.New(), uuid.New()
+	input := CreateAuctionInput{
+		ProductID: productID, StartingPriceCents: 100, MinimumIncrementCents: 10,
+		StartsAt: time.Now().UTC().Add(time.Hour), EndsAt: time.Now().UTC().Add(2 * time.Hour),
+	}
+	for _, product := range []ProductSnapshot{
+		{ID: productID, SellerID: sellerID, Name: "camera", Description: "used", Quantity: 0, Status: "available"},
+		{ID: productID, SellerID: sellerID, Description: "used", Quantity: 1, Status: "available"},
+		{ID: productID, SellerID: sellerID, Name: "camera", Quantity: 1, Status: "available"},
+	} {
+		products := &fakeAuctionProductClient{snapshot: product}
+		_, err := NewAuctionService(&fakeAuctionRepository{}, products).Create(context.Background(), sellerID, input)
+		if !errors.Is(err, ErrInvalidAuction) || products.lockCalls != 0 {
+			t.Fatalf("snapshot=%#v err=%v lock=%d", product, err, products.lockCalls)
+		}
+	}
+}
+
 func TestAuctionServiceUnlocksProductWhenCreatePersistenceFails(t *testing.T) {
 	productID, sellerID := uuid.New(), uuid.New()
-	products := &fakeAuctionProductClient{snapshot: ProductSnapshot{ID: productID, SellerID: sellerID, Name: "camera", Status: "available"}}
+	products := &fakeAuctionProductClient{snapshot: ProductSnapshot{ID: productID, SellerID: sellerID, Name: "camera", Description: "used", Quantity: 1, Status: "available"}}
 	repository := &fakeAuctionRepository{createErr: errors.New("database unavailable")}
 	service := NewAuctionService(repository, products)
 

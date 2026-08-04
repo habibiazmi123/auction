@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -105,6 +106,56 @@ func TestAuctionHandlerMapsInvalidCreate(t *testing.T) {
 	NewHandler(service, tokens).ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("status=%d", recorder.Code)
+	}
+}
+
+func TestAuctionHandlerMapsProductLookupErrors(t *testing.T) {
+	tokens, _ := auth.NewTokenService(auth.TokenConfig{Secret: "test-secret"})
+	for _, test := range []struct {
+		name string
+		err  error
+		want int
+	}{
+		{name: "unknown product", err: ErrProductNotFound, want: http.StatusNotFound},
+		{name: "ownership failure", err: ErrProductNotOwner, want: http.StatusForbidden},
+		{name: "product auth failure", err: ErrProductAuth, want: http.StatusForbidden},
+		{name: "unavailable product", err: ErrProductUnavailable, want: http.StatusConflict},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			service := fakeAuctionService{create: func(context.Context, uuid.UUID, CreateAuctionInput) (Auction, error) {
+				return Auction{}, test.err
+			}}
+			recorder := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodPost, "/v1/auctions", strings.NewReader(`{"product_id":"`+uuid.NewString()+`"}`))
+			request.Header.Set("Authorization", "Bearer "+issueAuctionTestToken(t, tokens, "seller", uuid.New()))
+			NewHandler(service, tokens).ServeHTTP(recorder, request)
+			if recorder.Code != test.want {
+				t.Fatalf("status: got %d want %d", recorder.Code, test.want)
+			}
+		})
+	}
+}
+
+func TestAuctionHandlerRejectsMissingOrInvalidAuth(t *testing.T) {
+	tokens, _ := auth.NewTokenService(auth.TokenConfig{Secret: "test-secret"})
+	called := false
+	service := fakeAuctionService{create: func(context.Context, uuid.UUID, CreateAuctionInput) (Auction, error) {
+		called = true
+		return Auction{}, errors.New("unexpected service call")
+	}}
+	for _, authorization := range []string{"", "Bearer invalid"} {
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, "/v1/auctions", strings.NewReader(`{}`))
+		if authorization != "" {
+			request.Header.Set("Authorization", authorization)
+		}
+		NewHandler(service, tokens).ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusUnauthorized {
+			t.Fatalf("authorization=%q status: got %d want %d", authorization, recorder.Code, http.StatusUnauthorized)
+		}
+	}
+	if called {
+		t.Fatal("service called for unauthenticated request")
 	}
 }
 
