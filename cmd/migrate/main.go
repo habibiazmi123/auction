@@ -20,7 +20,8 @@ var services = map[string]string{
 }
 
 var migrationDirs = map[string]string{
-	"user": "migrations/user",
+	"user":    "migrations/user",
+	"product": "migrations/product",
 }
 
 func main() {
@@ -48,14 +49,18 @@ func main() {
 	}
 	defer pool.Close()
 
-	migrationDir := filepath.Join("services", *service, "migrations")
-	if dir, ok := migrationDirs[*service]; ok {
-		migrationDir = dir
-	}
+	migrationDir := migrationDir(*service)
 	if err := postgres.ApplyMigrations(context.Background(), pool, os.DirFS("."), migrationDir); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+}
+
+func migrationDir(service string) string {
+	if dir, ok := migrationDirs[service]; ok {
+		return dir
+	}
+	return filepath.Join("services", service, "migrations")
 }
 
 func requiredEnv(key string) string {
