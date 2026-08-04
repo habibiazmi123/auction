@@ -131,7 +131,7 @@ func (c *httpProductClient) Ownership(ctx context.Context, productID, sellerID u
 	}
 	response, err := c.client.Do(request)
 	if err != nil {
-		return ProductSnapshot{}, fmt.Errorf("get product ownership: %w", err)
+		return ProductSnapshot{}, fmt.Errorf("%w: get product ownership: %w", ErrProductDependency, err)
 	}
 	defer response.Body.Close()
 	if err := productResponseError(response); err != nil {
@@ -139,7 +139,7 @@ func (c *httpProductClient) Ownership(ctx context.Context, productID, sellerID u
 	}
 	var product ProductSnapshot
 	if err := json.NewDecoder(response.Body).Decode(&product); err != nil {
-		return ProductSnapshot{}, fmt.Errorf("decode product ownership: %w", err)
+		return ProductSnapshot{}, fmt.Errorf("%w: decode product ownership: %w", ErrProductDependency, err)
 	}
 	return product, nil
 }
@@ -161,7 +161,7 @@ func (c *httpProductClient) changeLock(ctx context.Context, productID, auctionID
 	request.Header.Set("Content-Type", "application/json")
 	response, err := c.client.Do(request)
 	if err != nil {
-		return fmt.Errorf("change product lock: %w", err)
+		return fmt.Errorf("%w: change product lock: %w", ErrProductDependency, err)
 	}
 	defer response.Body.Close()
 	return productResponseError(response)
@@ -184,12 +184,15 @@ func productResponseError(response *http.Response) error {
 	case http.StatusNotFound:
 		return ErrProductNotFound
 	case http.StatusUnauthorized:
-		return ErrProductAuth
+		return fmt.Errorf("%w: product service returned HTTP %d", ErrProductDependency, response.StatusCode)
 	case http.StatusForbidden:
 		return ErrProductNotOwner
 	case http.StatusConflict:
 		return ErrProductUnavailable
 	default:
-		return fmt.Errorf("product service returned HTTP %d", response.StatusCode)
+		if response.StatusCode >= http.StatusInternalServerError {
+			return fmt.Errorf("%w: product service returned HTTP %d", ErrProductDependency, response.StatusCode)
+		}
+		return fmt.Errorf("%w: product service returned HTTP %d", ErrProductDependency, response.StatusCode)
 	}
 }

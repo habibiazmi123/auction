@@ -59,6 +59,14 @@ func TestAuctionRepositoryVersionUpdateAndConflict(t *testing.T) {
 	if err := repository.Update(ctx, Auction{ID: uuid.New(), Version: 1}); !errors.Is(err, ErrAuctionNotFound) {
 		t.Fatalf("missing update error: got %v want %v", err, ErrAuctionNotFound)
 	}
+
+	winnerID := auction.SellerID
+	auction.Status = AuctionStatusClosed
+	auction.CurrentWinnerID = &winnerID
+	auction.CurrentPriceCents = 110
+	if err := repository.Update(ctx, auction); err == nil {
+		t.Fatal("expected CHECK constraint violation when current_winner_id equals seller_id")
+	}
 }
 
 func auctionIntegrationDSN(t *testing.T) string {

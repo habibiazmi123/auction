@@ -118,7 +118,8 @@ func TestAuctionHandlerMapsProductLookupErrors(t *testing.T) {
 	}{
 		{name: "unknown product", err: ErrProductNotFound, want: http.StatusNotFound},
 		{name: "ownership failure", err: ErrProductNotOwner, want: http.StatusForbidden},
-		{name: "product auth failure", err: ErrProductAuth, want: http.StatusForbidden},
+		{name: "product auth failure", err: ErrProductAuth, want: http.StatusServiceUnavailable},
+		{name: "product dependency failure", err: ErrProductDependency, want: http.StatusServiceUnavailable},
 		{name: "unavailable product", err: ErrProductUnavailable, want: http.StatusConflict},
 	} {
 		t.Run(test.name, func(t *testing.T) {

@@ -140,8 +140,10 @@ func writeServiceError(w http.ResponseWriter, r *http.Request, err error) {
 		writeProblem(w, r, http.StatusNotFound, "not_found", "auction not found")
 	case errors.Is(err, ErrProductNotFound):
 		writeProblem(w, r, http.StatusNotFound, "not_found", "product not found")
-	case errors.Is(err, ErrProductNotOwner), errors.Is(err, ErrProductAuth):
+	case errors.Is(err, ErrProductNotOwner):
 		writeProblem(w, r, http.StatusForbidden, "forbidden", "seller does not own product")
+	case errors.Is(err, ErrProductAuth), errors.Is(err, ErrProductDependency):
+		writeProblem(w, r, http.StatusServiceUnavailable, "dependency_unavailable", "product service dependency unavailable")
 	case errors.Is(err, ErrInvalidAuction):
 		writeProblem(w, r, http.StatusBadRequest, "invalid_input", "request contains invalid fields")
 	case errors.Is(err, ErrAuctionConflict), errors.Is(err, ErrProductUnavailable), errors.Is(err, ErrAuctionVersionConflict), errors.Is(err, ErrAuctionNotLive), errors.Is(err, ErrAuctionNotScheduled), errors.Is(err, ErrAuctionNotStarted), errors.Is(err, ErrAuctionEnded), errors.Is(err, ErrAuctionNotEnded), errors.Is(err, ErrBidTooLow), errors.Is(err, ErrSellerCannotBid):

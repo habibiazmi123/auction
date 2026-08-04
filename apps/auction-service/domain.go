@@ -33,6 +33,7 @@ var (
 	ErrProductNotFound        = errors.New("product not found")
 	ErrProductNotOwner        = errors.New("seller does not own product")
 	ErrProductAuth            = errors.New("product service authorization failed")
+	ErrProductDependency      = errors.New("product service dependency unavailable")
 	ErrProductUnavailable     = errors.New("product is not available")
 )
 
