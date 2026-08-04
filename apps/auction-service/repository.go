@@ -285,7 +285,11 @@ func (r *repository) CloseDue(ctx context.Context, now time.Time) (int, error) {
 				return len(closed), fmt.Errorf("resolve winning bid: %w", err)
 			}
 		}
-		if err := insertCloseOutboxEvent(ctx, tx, a.id, a.sellerID, bidID, a.version, a.finalPrice, a.winnerID, now.UTC()); err != nil {
+		outboxVersion, err := nextAggregateVersion(ctx, tx, a.id.String())
+		if err != nil {
+			return len(closed), fmt.Errorf("resolve close aggregate version: %w", err)
+		}
+		if err := insertCloseOutboxEvent(ctx, tx, a.id, a.sellerID, bidID, outboxVersion, a.finalPrice, a.winnerID, now.UTC()); err != nil {
 			return len(closed), fmt.Errorf("insert close outbox: %w", err)
 		}
 	}

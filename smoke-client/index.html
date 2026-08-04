@@ -4,9 +4,134 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Auction Smoke Client</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 60rem; margin: 0 auto; padding: 1rem; }
+    h1 { margin-top: 0; }
+    fieldset { margin: 1rem 0; padding: 1rem; border: 1px solid #ccc; }
+    legend { font-weight: bold; }
+    label { display: block; margin: 0.5rem 0 0.2rem; }
+    input, select, button { font: inherit; padding: 0.3rem; }
+    button { margin-top: 0.5rem; cursor: pointer; }
+    button:disabled { opacity: 0.6; cursor: not-allowed; }
+    .row { display: flex; gap: 0.5rem; align-items: flex-end; flex-wrap: wrap; }
+    .row > label { flex: 1 1 12rem; }
+    #status { margin: 1rem 0; padding: 0.5rem; background: #f4f4f4; border-left: 3px solid #666; }
+    #event-log { list-style: none; padding: 0; margin: 0; max-height: 20rem; overflow-y: auto; border: 1px solid #eee; }
+    #event-log li { padding: 0.3rem 0.5rem; border-bottom: 1px solid #eee; }
+    .event-bid { border-left: 3px solid #2196f3; }
+    .event-closed { border-left: 3px solid #f44336; }
+  </style>
 </head>
 <body>
   <h1>Auction Smoke Client</h1>
-  <p>This static client is served by the API gateway.</p>
+  <p>
+    This static client is served by the API gateway and exercises the public
+    <code>/v1</code> REST and WebSocket APIs.
+  </p>
+
+  <div id="status" role="status" aria-live="polite">Not logged in.</div>
+
+  <fieldset>
+    <legend>Authentication</legend>
+    <div class="row">
+      <label>
+        Email
+        <input type="email" id="email" placeholder="user@example.com" autocomplete="email">
+      </label>
+      <label>
+        Password
+        <input type="password" id="password" placeholder="password" autocomplete="current-password">
+      </label>
+      <label>
+        Role
+        <select id="role">
+          <option value="buyer">buyer</option>
+          <option value="seller">seller</option>
+        </select>
+      </label>
+    </div>
+    <div class="row">
+      <button type="button" id="btn-register">Register</button>
+      <button type="button" id="btn-login">Login</button>
+      <button type="button" id="btn-logout" disabled>Logout</button>
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Seller setup</legend>
+    <div class="row">
+      <label>
+        Product name
+        <input type="text" id="product-name" placeholder="Vintage camera">
+      </label>
+      <label>
+        Description
+        <input type="text" id="product-description" placeholder="Fully functional">
+      </label>
+      <label>
+        Quantity
+        <input type="number" id="product-quantity" value="1" min="1">
+      </label>
+    </div>
+    <button type="button" id="btn-create-product" disabled>Create product</button>
+
+    <div class="row" style="margin-top: 1rem;">
+      <label>
+        Product ID
+        <input type="text" id="product-id" placeholder="paste product id">
+      </label>
+      <label>
+        Start price (cents)
+        <input type="number" id="start-price" value="1000" min="1">
+      </label>
+      <label>
+        Min increment (cents)
+        <input type="number" id="min-increment" value="100" min="1">
+      </label>
+    </div>
+    <div class="row">
+      <label>
+        Starts at (ISO)
+        <input type="datetime-local" id="starts-at">
+      </label>
+      <label>
+        Ends at (ISO)
+        <input type="datetime-local" id="ends-at">
+      </label>
+    </div>
+    <button type="button" id="btn-create-auction" disabled>Create auction</button>
+  </fieldset>
+
+  <fieldset>
+    <legend>Buyer / live auction</legend>
+    <div class="row">
+      <label>
+        Auction ID
+        <input type="text" id="auction-id" placeholder="paste auction id">
+      </label>
+      <button type="button" id="btn-connect" disabled>Connect WebSocket</button>
+      <button type="button" id="btn-disconnect" disabled>Disconnect</button>
+    </div>
+    <div class="row" style="margin-top: 1rem;">
+      <label>
+        Bid amount (cents)
+        <input type="number" id="bid-amount" value="1100" min="1">
+      </label>
+      <label>
+        Idempotency key
+        <input type="text" id="idempotency-key" readonly>
+      </label>
+      <button type="button" id="btn-new-key">New key</button>
+      <button type="button" id="btn-submit-bid" disabled>Submit bid</button>
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Event log</legend>
+    <ul id="event-log" role="log" aria-live="polite"></ul>
+    <button type="button" id="btn-clear-log">Clear log</button>
+  </fieldset>
+
+  <script src="app.js" defer></script>
 </body>
 </html>

@@ -269,6 +269,7 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, target any) bool {
 }
 
 func (h *Handler) subscribeAuction(w http.ResponseWriter, r *http.Request) {
+	h.setWebSocketAuthHeader(r)
 	principal, ok := h.authenticate(w, r)
 	if !ok {
 		return
@@ -302,6 +303,7 @@ func (h *Handler) subscribeAuction(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) subscribeNotifications(w http.ResponseWriter, r *http.Request) {
+	h.setWebSocketAuthHeader(r)
 	principal, ok := h.authenticate(w, r)
 	if !ok {
 		return
@@ -326,6 +328,18 @@ func (h *Handler) subscribeNotifications(w http.ResponseWriter, r *http.Request)
 	if err := h.hub.SubscribeNotification(context.Background(), userID, conn); err != nil {
 		conn.Close(websocket.StatusGoingAway, "subscription rejected")
 		return
+	}
+}
+
+// setWebSocketAuthHeader allows browser WebSocket clients to pass the access
+// token in the query string because the browser WebSocket API cannot set custom
+// request headers such as Authorization.
+func (h *Handler) setWebSocketAuthHeader(r *http.Request) {
+	if r.Header.Get("Authorization") != "" {
+		return
+	}
+	if token := r.URL.Query().Get("access_token"); token != "" {
+		r.Header.Set("Authorization", "Bearer "+token)
 	}
 }
 
