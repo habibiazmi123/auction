@@ -89,6 +89,26 @@ func TestHTTPMiddlewarePreservesOptionalResponseWriterInterfaces(t *testing.T) {
 	}
 }
 
+func TestHTTPMiddlewareDoesNotExposeUnsupportedResponseWriterInterfaces(t *testing.T) {
+	var got http.ResponseWriter
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		got = w
+		_, _ = w.Write([]byte("body"))
+	})
+
+	writer := &plainResponseWriter{header: make(http.Header)}
+	Middleware(slog.Default())(handler).ServeHTTP(writer, httptest.NewRequest(http.MethodGet, "/", nil))
+	if _, ok := got.(http.Flusher); ok {
+		t.Fatal("unsupported http.Flusher was exposed")
+	}
+	if _, ok := got.(http.Hijacker); ok {
+		t.Fatal("unsupported http.Hijacker was exposed")
+	}
+	if _, ok := got.(http.Pusher); ok {
+		t.Fatal("unsupported http.Pusher was exposed")
+	}
+}
+
 type optionalResponseWriter struct {
 	*httptest.ResponseRecorder
 	hijacked bool
@@ -114,3 +134,15 @@ func (w *optionalResponseWriter) Push(string, *http.PushOptions) error {
 func (w *optionalResponseWriter) ReadFrom(r io.Reader) (int64, error) {
 	return io.Copy(w.ResponseRecorder, r)
 }
+
+type plainResponseWriter struct {
+	header http.Header
+	body   bytes.Buffer
+	status int
+}
+
+func (w *plainResponseWriter) Header() http.Header { return w.header }
+
+func (w *plainResponseWriter) WriteHeader(status int) { w.status = status }
+
+func (w *plainResponseWriter) Write(data []byte) (int, error) { return w.body.Write(data) }
