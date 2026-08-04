@@ -137,10 +137,11 @@ func (r *OutboxRelay) handleFailure(ctx context.Context, tx pgx.Tx, id int64, at
 	if nextAttempts >= r.MaxAttempts && strings.TrimSpace(dlqTopic) != "" {
 		if err := r.Publisher.Publish(ctx, dlqTopic, fmt.Sprintf("%d", id), []byte(publishErr.Error())); err != nil {
 			slog.WarnContext(ctx, "failed to publish to DLQ", "outbox_id", id, "error", err)
+			// ponytail: keep attempts below MaxAttempts so the row stays eligible for retry instead of being stranded.
 			_, dbErr := tx.Exec(ctx, `
 				UPDATE outbox_events
-				SET attempts = $2, next_at = $3, last_error = $4
-				WHERE id = $1`, id, nextAttempts, time.Now().UTC().Add(exponentialBackoff(r.BaseDelay, attempts)), publishErr.Error())
+				SET next_at = $2, last_error = $3
+				WHERE id = $1`, id, time.Now().UTC().Add(exponentialBackoff(r.BaseDelay, attempts)), publishErr.Error())
 			return dbErr
 		}
 		_, err := tx.Exec(ctx, `UPDATE outbox_events SET sent_at = now(), last_error = $2 WHERE id = $1`, id, publishErr.Error())

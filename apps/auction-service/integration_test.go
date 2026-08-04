@@ -170,6 +170,96 @@ func TestOutboxRetryRepublishes(t *testing.T) {
 	}
 }
 
+func TestRejectedBidIsPersistedWithCode(t *testing.T) {
+	if os.Getenv("INTEGRATION_TEST") != "1" {
+		t.Skip("set INTEGRATION_TEST=1 to run against Compose PostgreSQL and Kafka")
+	}
+	ctx := context.Background()
+	pool := integrationPool(t, ctx)
+	defer pool.Close()
+	repository := NewRepository(pool)
+	auction := insertLiveAuction(t, ctx, repository, 100, 10)
+
+	command := contracts.BidCommand{
+		BidID: uuid.NewString(), CommandID: uuid.NewString(), AuctionID: auction.ID.String(),
+		BidderID: uuid.NewString(), AmountCents: 50, IdempotencyKey: "idem-rejected",
+	}
+	result, err := repository.ApplyBidTx(ctx, command)
+	if err != nil {
+		t.Fatalf("apply bid: %v", err)
+	}
+	if result.Status != BidStatusRejected {
+		t.Fatalf("expected rejected status, got %s", result.Status)
+	}
+	if result.RejectionCode != "bid_too_low" {
+		t.Fatalf("expected rejection_code=bid_too_low, got %q", result.RejectionCode)
+	}
+
+	var status, code string
+	if err := pool.QueryRow(ctx, `SELECT status, rejection_code FROM bids WHERE command_id = $1`, command.CommandID).Scan(&status, &code); err != nil {
+		t.Fatalf("query rejected bid: %v", err)
+	}
+	if status != BidStatusRejected {
+		t.Fatalf("expected persisted status=%s, got %s", BidStatusRejected, status)
+	}
+	if strings.TrimSpace(code) == "" {
+		t.Fatalf("expected non-empty rejection_code, got %q", code)
+	}
+}
+
+func TestOutboxDLQFailureRetries(t *testing.T) {
+	if os.Getenv("INTEGRATION_TEST") != "1" {
+		t.Skip("set INTEGRATION_TEST=1 to run against Compose PostgreSQL and Kafka")
+	}
+	ctx := context.Background()
+	pool := integrationPool(t, ctx)
+	defer pool.Close()
+	repository := NewRepository(pool)
+	auction := insertLiveAuction(t, ctx, repository, 100, 10)
+
+	command := contracts.BidCommand{
+		BidID: uuid.NewString(), CommandID: uuid.NewString(), AuctionID: auction.ID.String(),
+		BidderID: uuid.NewString(), AmountCents: 150, IdempotencyKey: "idem-dlq-fail",
+	}
+	if _, err := repository.ApplyBidTx(ctx, command); err != nil {
+		t.Fatalf("apply bid: %v", err)
+	}
+
+	var eventID int64
+	if err := pool.QueryRow(ctx, `SELECT id FROM outbox_events WHERE aggregate_id = $1 AND sent_at IS NULL`, auction.ID.String()).Scan(&eventID); err != nil {
+		t.Fatalf("find unsent outbox event: %v", err)
+	}
+
+	failing := &alwaysFailingPublisher{}
+	relay := NewOutboxRelay(pool, failing)
+	relay.PollInterval = 10 * time.Millisecond
+	relay.BaseDelay = 1 * time.Millisecond
+	relay.MaxAttempts = 1
+
+	if _, err := relay.RunOnce(ctx); err != nil {
+		t.Fatalf("relay run: %v", err)
+	}
+	if failing.topicCalls == 0 || failing.dlqCalls == 0 {
+		t.Fatalf("expected topic and DLQ publish attempts, topic=%d dlq=%d", failing.topicCalls, failing.dlqCalls)
+	}
+
+	var attempts int
+	if err := pool.QueryRow(ctx, `SELECT attempts FROM outbox_events WHERE id = $1`, eventID).Scan(&attempts); err != nil {
+		t.Fatalf("check attempts: %v", err)
+	}
+	if attempts >= relay.MaxAttempts {
+		t.Fatalf("expected attempts < MaxAttempts after DLQ failure so row remains retryable, got attempts=%d", attempts)
+	}
+
+	var lastError string
+	if err := pool.QueryRow(ctx, `SELECT last_error FROM outbox_events WHERE id = $1`, eventID).Scan(&lastError); err != nil {
+		t.Fatalf("check last_error: %v", err)
+	}
+	if !strings.Contains(lastError, "simulated topic failure") {
+		t.Fatalf("expected last_error to contain topic failure, got %q", lastError)
+	}
+}
+
 func TestCloseRetryEmitsOneCloseEvent(t *testing.T) {
 	if os.Getenv("INTEGRATION_TEST") != "1" {
 		t.Skip("set INTEGRATION_TEST=1 to run against Compose PostgreSQL and Kafka")
@@ -331,4 +421,18 @@ func (p *failingPublisher) Publish(ctx context.Context, topic, key string, value
 		return fmt.Errorf("simulated publish failure %d", p.calls)
 	}
 	return nil
+}
+
+type alwaysFailingPublisher struct {
+	topicCalls int
+	dlqCalls   int
+}
+
+func (p *alwaysFailingPublisher) Publish(ctx context.Context, topic, key string, value []byte) error {
+	if strings.HasSuffix(topic, ".dlq.v1") {
+		p.dlqCalls++
+		return fmt.Errorf("simulated DLQ failure %d", p.dlqCalls)
+	}
+	p.topicCalls++
+	return fmt.Errorf("simulated topic failure %d", p.topicCalls)
 }
