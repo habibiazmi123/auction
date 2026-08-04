@@ -101,6 +101,50 @@ func TestNotificationCreationIsIdempotentBySourceEvent(t *testing.T) {
 	}
 }
 
+func TestNotificationIDInPayload(t *testing.T) {
+	if os.Getenv("INTEGRATION_TEST") != "1" {
+		t.Skip("set INTEGRATION_TEST=1 to run against Compose PostgreSQL notification_db")
+	}
+	ctx := context.Background()
+	pool := notificationIntegrationPool(t, ctx)
+	defer pool.Close()
+
+	repository := NewNotificationRepository(pool)
+	eventID := uuid.NewString()
+	recipientID := uuid.NewString()
+	auctionID := uuid.NewString()
+
+	input := NotificationInput{
+		RecipientID: recipientID,
+		Type:        "auction_closed",
+		AuctionID:   auctionID,
+		Title:       "Auction closed",
+		Body:        "Your auction has closed.",
+	}
+	if err := repository.CreateIfAbsent(ctx, eventID, input); err != nil {
+		t.Fatalf("create notification: %v", err)
+	}
+
+	var rowID string
+	if err := pool.QueryRow(ctx, `SELECT id::text FROM notifications WHERE source_event_id = $1 AND recipient_id = $2`, eventID, recipientID).Scan(&rowID); err != nil {
+		t.Fatalf("query notification id: %v", err)
+	}
+
+	var payload []byte
+	if err := pool.QueryRow(ctx, `SELECT payload FROM outbox_events WHERE event_type = 'notification.created.v1' AND aggregate_id = $1`, recipientID).Scan(&payload); err != nil {
+		t.Fatalf("query outbox payload: %v", err)
+	}
+
+	var envelope contracts.EventEnvelope[contracts.NotificationCreated]
+	if err := json.Unmarshal(payload, &envelope); err != nil {
+		t.Fatalf("unmarshal outbox payload: %v", err)
+	}
+
+	if envelope.Payload.NotificationID != rowID {
+		t.Fatalf("notification id mismatch: payload has %s, database row is %s", envelope.Payload.NotificationID, rowID)
+	}
+}
+
 func TestNotificationProcessorCreatesForMultipleRecipients(t *testing.T) {
 	if os.Getenv("INTEGRATION_TEST") != "1" {
 		t.Skip("set INTEGRATION_TEST=1 to run against Compose PostgreSQL notification_db")
