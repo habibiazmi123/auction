@@ -42,14 +42,11 @@ type UserRepository interface {
 	FindByEmail(context.Context, string) (User, error)
 	SaveRefreshTokenHash(context.Context, string, string, time.Time) error
 	RevokeRefreshToken(context.Context, string) error
+	RotateRefreshToken(context.Context, string, string, string, time.Time) error
 }
 
 type refreshFinder interface {
 	FindRefreshToken(context.Context, string) (RefreshToken, error)
-}
-
-type refreshRotator interface {
-	RotateRefreshToken(context.Context, string, string, string, time.Time) error
 }
 
 type UserService interface {

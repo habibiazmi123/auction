@@ -10,8 +10,9 @@ import (
 )
 
 type fakeUserRepository struct {
-	users   map[string]User
-	refresh map[string]RefreshToken
+	users       map[string]User
+	refresh     map[string]RefreshToken
+	rotateCalls int
 }
 
 func newFakeUserRepository() *fakeUserRepository {
@@ -59,10 +60,26 @@ func (r *fakeUserRepository) RevokeRefreshToken(_ context.Context, tokenHash str
 }
 
 func (r *fakeUserRepository) RotateRefreshToken(ctx context.Context, previousHash, userID, nextHash string, expiresAt time.Time) error {
+	r.rotateCalls++
 	if err := r.RevokeRefreshToken(ctx, previousHash); err != nil {
 		return err
 	}
 	return r.SaveRefreshTokenHash(ctx, userID, nextHash, expiresAt)
+}
+
+type recordingPasswordService struct {
+	verifyCalls    int
+	verifiedHash   string
+	verifiedSecret string
+}
+
+func (s *recordingPasswordService) Hash(string) (string, error) { return "unused", nil }
+
+func (s *recordingPasswordService) Verify(hash, password string) error {
+	s.verifyCalls++
+	s.verifiedHash = hash
+	s.verifiedSecret = password
+	return auth.ErrInvalidPassword
 }
 
 type fakeTokenService struct{ next int }
@@ -101,6 +118,13 @@ func TestRegisterRejectsDuplicateEmailAndInvalidRole(t *testing.T) {
 	}
 }
 
+func TestRegisterRejectsAdminRole(t *testing.T) {
+	service, _ := newTestService()
+	if _, err := service.Register(context.Background(), "admin@example.com", "correct horse", "admin"); !errors.Is(err, ErrInvalidRole) {
+		t.Fatalf("admin role error: got %v", err)
+	}
+}
+
 func TestLoginHidesUnknownEmailAndWrongPassword(t *testing.T) {
 	service, _ := newTestService()
 	if _, err := service.Register(context.Background(), "buyer@example.com", "correct horse", "buyer"); err != nil {
@@ -113,6 +137,20 @@ func TestLoginHidesUnknownEmailAndWrongPassword(t *testing.T) {
 	}
 	if unknownErr.Error() != wrongPasswordErr.Error() {
 		t.Fatalf("credential errors disclose account state: %q != %q", unknownErr, wrongPasswordErr)
+	}
+}
+
+func TestLoginVerifiesUnknownEmailAgainstDummyHash(t *testing.T) {
+	passwords := &recordingPasswordService{}
+	service := NewUserService(newFakeUserRepository(), passwords, &fakeTokenService{})
+	if _, err := service.Login(context.Background(), "missing@example.com", "wrong password"); !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("unknown email error: got %v", err)
+	}
+	if passwords.verifyCalls != 1 {
+		t.Fatalf("password verification calls: got %d, want 1", passwords.verifyCalls)
+	}
+	if passwords.verifiedHash != dummyPasswordHash {
+		t.Fatalf("verified hash: got %q, want fixed dummy hash", passwords.verifiedHash)
 	}
 }
 
@@ -154,6 +192,9 @@ func TestRefreshRotatesTokenAndRevokesPreviousToken(t *testing.T) {
 	}
 	if _, ok := repo.refresh[rotated.RefreshTokenHash]; !ok {
 		t.Fatal("rotated refresh token was not persisted")
+	}
+	if repo.rotateCalls != 1 {
+		t.Fatalf("atomic rotation calls: got %d, want 1", repo.rotateCalls)
 	}
 }
 

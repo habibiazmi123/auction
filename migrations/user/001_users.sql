@@ -12,7 +12,8 @@ CREATE TABLE IF NOT EXISTS users (
     updated_at timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS users_email_normalized_idx ON users (email);
+DROP INDEX IF EXISTS users_email_normalized_idx;
+CREATE UNIQUE INDEX users_email_normalized_idx ON users (lower(trim(email)));
 
 CREATE TABLE IF NOT EXISTS refresh_tokens (
     token_hash text PRIMARY KEY,

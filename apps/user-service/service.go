@@ -14,15 +14,21 @@ import (
 const (
 	minimumPasswordLength = 8
 	maximumPasswordLength = 128
+	dummyPasswordHash     = "argon2id$v=19$m=65536,t=3,p=1$zGKuXczRp89Nln/4FtQ0NQ$4CNUWf50MSeZNltdcUy2W99WlzJmDzhHsuSRAvY2vbE"
 )
+
+type passwordService interface {
+	Hash(string) (string, error)
+	Verify(string, string) error
+}
 
 type service struct {
 	repository UserRepository
-	password   *auth.PasswordService
+	password   passwordService
 	tokens     auth.TokenService
 }
 
-func NewUserService(repository UserRepository, password *auth.PasswordService, tokens auth.TokenService) *service {
+func NewUserService(repository UserRepository, password passwordService, tokens auth.TokenService) *service {
 	if password == nil {
 		password = auth.NewPasswordService()
 	}
@@ -61,6 +67,7 @@ func (s *service) Login(ctx context.Context, email, password string) (auth.Token
 	user, err := s.repository.FindByEmail(ctx, normalizeEmail(email))
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
+			_ = s.password.Verify(dummyPasswordHash, password)
 			return auth.TokenPair{}, ErrInvalidCredentials
 		}
 		return auth.TokenPair{}, err
@@ -107,14 +114,7 @@ func (s *service) Refresh(ctx context.Context, refreshToken string) (auth.TokenP
 	if err != nil {
 		return auth.TokenPair{}, err
 	}
-	if rotator, ok := s.repository.(refreshRotator); ok {
-		err = rotator.RotateRefreshToken(ctx, previousHash, stored.UserID, pair.RefreshTokenHash, pair.RefreshExpiresAt)
-	} else {
-		err = s.repository.RevokeRefreshToken(ctx, previousHash)
-		if err == nil {
-			err = s.repository.SaveRefreshTokenHash(ctx, stored.UserID, pair.RefreshTokenHash, pair.RefreshExpiresAt)
-		}
-	}
+	err = s.repository.RotateRefreshToken(ctx, previousHash, stored.UserID, pair.RefreshTokenHash, pair.RefreshExpiresAt)
 	if err != nil {
 		return auth.TokenPair{}, err
 	}
@@ -142,7 +142,7 @@ func validEmail(email string) bool {
 }
 
 func validRole(role string) bool {
-	return role == "buyer" || role == "seller" || role == "admin"
+	return role == "buyer" || role == "seller"
 }
 
 func validatePassword(password string) error {

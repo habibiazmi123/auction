@@ -19,6 +19,10 @@ var services = map[string]string{
 	"notification": "notification_db",
 }
 
+var migrationDirs = map[string]string{
+	"user": "migrations/user",
+}
+
 func main() {
 	service := flag.String("service", "", "service to migrate")
 	flag.Parse()
@@ -44,7 +48,11 @@ func main() {
 	}
 	defer pool.Close()
 
-	if err := postgres.ApplyMigrations(context.Background(), pool, os.DirFS("."), filepath.Join("services", *service, "migrations")); err != nil {
+	migrationDir := filepath.Join("services", *service, "migrations")
+	if dir, ok := migrationDirs[*service]; ok {
+		migrationDir = dir
+	}
+	if err := postgres.ApplyMigrations(context.Background(), pool, os.DirFS("."), migrationDir); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
