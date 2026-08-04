@@ -4,6 +4,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -107,22 +108,10 @@ func (h *Handler) get(w http.ResponseWriter, r *http.Request, id uuid.UUID) {
 }
 
 func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
-	page := Page{}
-	if value := r.URL.Query().Get("page"); value != "" {
-		parsed, err := strconv.Atoi(value)
-		if err != nil {
-			writeProblem(w, r, http.StatusBadRequest, "invalid_input", "page must be an integer")
-			return
-		}
-		page.Number = parsed
-	}
-	if value := r.URL.Query().Get("page_size"); value != "" {
-		parsed, err := strconv.Atoi(value)
-		if err != nil {
-			writeProblem(w, r, http.StatusBadRequest, "invalid_input", "page_size must be an integer")
-			return
-		}
-		page.Size = parsed
+	page, err := pageFromQuery(r.URL.Query())
+	if err != nil {
+		writeProblem(w, r, http.StatusBadRequest, "invalid_input", err.Error())
+		return
 	}
 	products, pageInfo, err := h.service.List(r.Context(), page)
 	if err != nil {
@@ -130,6 +119,28 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, productListResponse{Items: products, PageInfo: pageInfo})
+}
+
+func pageFromQuery(query map[string][]string) (Page, error) {
+	page := Page{Number: 1, Size: DefaultPageSize}
+	for key, target := range map[string]*int{"page": &page.Number, "page_size": &page.Size} {
+		values, ok := query[key]
+		if !ok {
+			continue
+		}
+		if len(values) != 1 || values[0] == "" {
+			return Page{}, fmt.Errorf("%s must be an integer", key)
+		}
+		parsed, err := strconv.Atoi(values[0])
+		if err != nil {
+			return Page{}, fmt.Errorf("%s must be an integer", key)
+		}
+		if parsed == 0 {
+			return Page{}, fmt.Errorf("%s must be positive", key)
+		}
+		*target = parsed
+	}
+	return normalizePage(page)
 }
 
 func (h *Handler) update(w http.ResponseWriter, r *http.Request, productID uuid.UUID) {
@@ -286,6 +297,8 @@ func writeServiceError(w http.ResponseWriter, r *http.Request, err error) {
 		writeProblem(w, r, http.StatusUnauthorized, "unauthorized", "unauthorized")
 	case errors.Is(err, ErrProductLocked):
 		writeProblem(w, r, http.StatusConflict, "product_locked", "product is locked")
+	case errors.Is(err, ErrProductUnavailable):
+		writeProblem(w, r, http.StatusConflict, "product_unavailable", "product is not available")
 	case errors.Is(err, ErrInvalidProduct), errors.Is(err, ErrInvalidPage):
 		writeProblem(w, r, http.StatusBadRequest, "invalid_input", "request contains invalid fields")
 	default:

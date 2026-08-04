@@ -18,13 +18,14 @@ const (
 )
 
 var (
-	ErrProductNotFound = errors.New("product not found")
-	ErrProductNotOwner = errors.New("product seller does not own product")
-	ErrProductLocked   = errors.New("product is locked")
-	ErrInvalidProduct  = errors.New("invalid product")
-	ErrInvalidPage     = errors.New("invalid page")
-	ErrUnauthorized    = errors.New("unauthorized")
-	ErrForbidden       = errors.New("forbidden")
+	ErrProductNotFound    = errors.New("product not found")
+	ErrProductNotOwner    = errors.New("product seller does not own product")
+	ErrProductLocked      = errors.New("product is locked")
+	ErrProductUnavailable = errors.New("product is not available")
+	ErrInvalidProduct     = errors.New("invalid product")
+	ErrInvalidPage        = errors.New("invalid page")
+	ErrUnauthorized       = errors.New("unauthorized")
+	ErrForbidden          = errors.New("forbidden")
 )
 
 type Product struct {
@@ -114,7 +115,11 @@ func (s *productService) Get(ctx context.Context, id uuid.UUID) (Product, error)
 }
 
 func (s *productService) List(ctx context.Context, page Page) ([]Product, PageInfo, error) {
-	page = normalizePage(page)
+	var err error
+	page, err = normalizePage(page)
+	if err != nil {
+		return nil, PageInfo{}, err
+	}
 	return s.repository.List(ctx, page)
 }
 
@@ -168,15 +173,38 @@ func validProductInput(name, description string, quantity int) bool {
 	return strings.TrimSpace(name) != "" && strings.TrimSpace(description) != "" && quantity > 0
 }
 
-func normalizePage(page Page) Page {
-	if page.Number < 1 {
-		page.Number = 1
+func normalizePage(page Page) (Page, error) {
+	if page.Number < 1 || page.Size < 1 || page.Size > MaxPageSize {
+		return Page{}, ErrInvalidPage
 	}
-	if page.Size < 1 {
-		page.Size = DefaultPageSize
+	maxInt := int(^uint(0) >> 1)
+	if page.Number-1 > maxInt/page.Size {
+		return Page{}, ErrInvalidPage
 	}
-	if page.Size > MaxPageSize {
-		page.Size = MaxPageSize
+	return page, nil
+}
+
+func transitionProductLock(product Product, auctionID uuid.UUID, lock bool) (Product, bool, error) {
+	if auctionID == uuid.Nil {
+		return product, false, ErrInvalidProduct
 	}
-	return page
+	if lock {
+		switch product.Status {
+		case ProductStatusAvailable:
+			product.Status, product.AuctionID = ProductStatusLocked, &auctionID
+			return product, true, nil
+		case ProductStatusLocked:
+			if product.AuctionID != nil && *product.AuctionID == auctionID {
+				return product, false, nil
+			}
+			return product, false, ErrProductLocked
+		default:
+			return product, false, ErrProductUnavailable
+		}
+	}
+	if product.Status != ProductStatusLocked || product.AuctionID == nil || *product.AuctionID != auctionID {
+		return product, false, ErrProductLocked
+	}
+	product.Status, product.AuctionID = ProductStatusAvailable, nil
+	return product, true, nil
 }

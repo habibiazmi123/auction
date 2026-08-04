@@ -101,6 +101,29 @@ func TestProductHandlerMapsValidationToProblem(t *testing.T) {
 	}
 }
 
+func TestProductHandlerRejectsOutOfRangePagination(t *testing.T) {
+	called := false
+	service := fakeProductService{
+		list: func(context.Context, Page) ([]Product, PageInfo, error) {
+			called = true
+			return nil, PageInfo{}, nil
+		},
+	}
+	for _, query := range []string{"?page=0", "?page_size=101", "?page=9223372036854775807&page_size=100"} {
+		t.Run(query, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodGet, "/v1/products"+query, nil)
+			NewHandler(service, nil, "internal-secret").ServeHTTP(recorder, request)
+			if recorder.Code != http.StatusBadRequest || !strings.HasPrefix(recorder.Header().Get("Content-Type"), "application/problem+json") {
+				t.Fatalf("status=%d content-type=%q", recorder.Code, recorder.Header().Get("Content-Type"))
+			}
+		})
+	}
+	if called {
+		t.Fatal("list service was called for invalid pagination")
+	}
+}
+
 func TestProductHandlerInternalEndpointsRequireCredential(t *testing.T) {
 	productID, userID, auctionID := uuid.New(), uuid.New(), uuid.New()
 	service := fakeProductService{

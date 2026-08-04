@@ -52,6 +52,11 @@ func (r *repository) Get(ctx context.Context, id uuid.UUID) (Product, error) {
 }
 
 func (r *repository) List(ctx context.Context, page Page) ([]Product, PageInfo, error) {
+	var err error
+	page, err = normalizePage(page)
+	if err != nil {
+		return nil, PageInfo{}, err
+	}
 	offset := (page.Number - 1) * page.Size
 	var total int64
 	if err := r.pool.QueryRow(ctx, `SELECT count(*) FROM products`).Scan(&total); err != nil {
@@ -138,23 +143,14 @@ func (r *repository) changeLock(ctx context.Context, productID, auctionID uuid.U
 	if err != nil {
 		return fmt.Errorf("lock product row: %w", err)
 	}
-	if lock {
-		if product.Status == ProductStatusLocked {
-			if product.AuctionID != nil && *product.AuctionID != auctionID {
-				return ErrProductLocked
-			}
-			return nil
-		}
-		product.Status, product.AuctionID = ProductStatusLocked, &auctionID
-	} else {
-		if product.Status != ProductStatusLocked {
-			return nil
-		}
-		if product.AuctionID == nil || *product.AuctionID != auctionID {
-			return ErrProductLocked
-		}
-		product.Status, product.AuctionID = ProductStatusAvailable, nil
+	updated, changed, err := transitionProductLock(product, auctionID, lock)
+	if err != nil {
+		return err
 	}
+	if !changed {
+		return nil
+	}
+	product = updated
 	product.Version++
 	product.UpdatedAt = time.Now().UTC()
 	if _, err := tx.Exec(ctx, `UPDATE products SET status = $2, auction_id = $3, version = $4, updated_at = $5 WHERE id = $1`, product.ID, product.Status, product.AuctionID, product.Version, product.UpdatedAt); err != nil {

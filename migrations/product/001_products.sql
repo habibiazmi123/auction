@@ -8,7 +8,8 @@ CREATE TABLE IF NOT EXISTS products (
     auction_id uuid,
     version bigint NOT NULL DEFAULT 1 CHECK (version > 0),
     created_at timestamptz NOT NULL DEFAULT now(),
-    updated_at timestamptz NOT NULL DEFAULT now()
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT products_status_lock_consistency CHECK ((status = 'locked') = (auction_id IS NOT NULL))
 );
 
 CREATE INDEX IF NOT EXISTS products_seller_id_idx ON products (seller_id);

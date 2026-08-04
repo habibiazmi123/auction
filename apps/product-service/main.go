@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
 
 	"github.com/example/auction/packages/auth"
 	"github.com/example/auction/packages/config"
@@ -16,6 +17,11 @@ import (
 )
 
 func main() {
+	internalCredential, err := requiredInternalServiceCredential()
+	if err != nil {
+		slog.Error("load internal service credential", "error", err)
+		os.Exit(1)
+	}
 	cfg, err := config.Load()
 	if err != nil {
 		slog.Error("load config", "error", err)
@@ -56,12 +62,20 @@ func main() {
 		}
 	}()
 	service := NewProductService(NewRepository(pool))
-	server := &http.Server{Addr: fmt.Sprintf(":%d", servicePort(cfg)), Handler: observability.Middleware(slog.Default())(NewHandler(service, tokens, os.Getenv("INTERNAL_SERVICE_CREDENTIAL")))}
+	server := &http.Server{Addr: fmt.Sprintf(":%d", servicePort(cfg)), Handler: observability.Middleware(slog.Default())(NewHandler(service, tokens, internalCredential))}
 	slog.Info("product service listening", "addr", server.Addr)
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		slog.Error("serve product service", "error", err)
 		os.Exit(1)
 	}
+}
+
+func requiredInternalServiceCredential() (string, error) {
+	credential := strings.TrimSpace(os.Getenv("INTERNAL_SERVICE_CREDENTIAL"))
+	if credential == "" {
+		return "", fmt.Errorf("INTERNAL_SERVICE_CREDENTIAL is required")
+	}
+	return credential, nil
 }
 
 func servicePort(cfg config.Config) int {

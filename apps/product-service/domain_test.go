@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"math"
 	"testing"
 
 	"github.com/google/uuid"
@@ -62,11 +63,33 @@ func (r *fakeProductRepository) Update(_ context.Context, product Product) error
 }
 
 func (r *fakeProductRepository) Lock(_ context.Context, productID, auctionID uuid.UUID) error {
+	product, ok := r.products[productID]
+	if !ok {
+		return ErrProductNotFound
+	}
+	updated, changed, err := transitionProductLock(product, auctionID, true)
+	if err != nil {
+		return err
+	}
+	if changed {
+		r.products[productID] = updated
+	}
 	r.locked = [2]uuid.UUID{productID, auctionID}
 	return nil
 }
 
 func (r *fakeProductRepository) Unlock(_ context.Context, productID, auctionID uuid.UUID) error {
+	product, ok := r.products[productID]
+	if !ok {
+		return ErrProductNotFound
+	}
+	updated, changed, err := transitionProductLock(product, auctionID, false)
+	if err != nil {
+		return err
+	}
+	if changed {
+		r.products[productID] = updated
+	}
 	r.locked = [2]uuid.UUID{productID, auctionID}
 	return nil
 }
@@ -135,20 +158,64 @@ func TestProductServiceUpdateRejectsLockedProduct(t *testing.T) {
 	}
 }
 
-func TestProductServiceListBoundsPageSize(t *testing.T) {
+func TestProductServiceListRejectsInvalidPage(t *testing.T) {
 	repository := &fakeProductRepository{}
 	service := NewProductService(repository)
 
-	_, pageInfo, err := service.List(context.Background(), Page{Number: 0, Size: 1000})
-	if err != nil {
-		t.Fatalf("list: %v", err)
-	}
-	if repository.page.Number != 1 || repository.page.Size != MaxPageSize || pageInfo.PageSize != MaxPageSize {
-		t.Fatalf("page: repository=%#v info=%#v", repository.page, pageInfo)
+	for _, page := range []Page{
+		{Number: 0, Size: DefaultPageSize},
+		{Number: 1, Size: MaxPageSize + 1},
+		{Number: -1, Size: 1},
+		{Number: math.MaxInt, Size: MaxPageSize},
+	} {
+		if _, _, err := service.List(context.Background(), page); !errors.Is(err, ErrInvalidPage) {
+			t.Fatalf("page=%#v: error=%v, want %v", page, err, ErrInvalidPage)
+		}
 	}
 }
 
-func TestProductServiceLockUnlockAreIdempotentByAuction(t *testing.T) {
+func TestTransitionProductLockStateMatrix(t *testing.T) {
+	auctionID, otherAuctionID := uuid.New(), uuid.New()
+	tests := []struct {
+		name       string
+		product    Product
+		lock       bool
+		auctionID  uuid.UUID
+		wantStatus string
+		wantChange bool
+		wantErr    error
+	}{
+		{name: "available locks", product: Product{Status: ProductStatusAvailable}, lock: true, auctionID: auctionID, wantStatus: ProductStatusLocked, wantChange: true},
+		{name: "draft cannot lock", product: Product{Status: ProductStatusDraft}, lock: true, auctionID: auctionID, wantErr: ErrProductUnavailable},
+		{name: "same lock is idempotent", product: Product{Status: ProductStatusLocked, AuctionID: &auctionID}, lock: true, auctionID: auctionID, wantStatus: ProductStatusLocked},
+		{name: "different lock is rejected", product: Product{Status: ProductStatusLocked, AuctionID: &auctionID}, lock: true, auctionID: otherAuctionID, wantErr: ErrProductLocked},
+		{name: "available cannot unlock", product: Product{Status: ProductStatusAvailable}, auctionID: auctionID, wantErr: ErrProductLocked},
+		{name: "locked matching auction unlocks", product: Product{Status: ProductStatusLocked, AuctionID: &auctionID}, auctionID: auctionID, wantStatus: ProductStatusAvailable, wantChange: true},
+		{name: "locked different auction cannot unlock", product: Product{Status: ProductStatusLocked, AuctionID: &auctionID}, auctionID: otherAuctionID, wantErr: ErrProductLocked},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, changed, err := transitionProductLock(test.product, test.auctionID, test.lock)
+			if !errors.Is(err, test.wantErr) {
+				t.Fatalf("error: got %v, want %v", err, test.wantErr)
+			}
+			if test.wantErr != nil {
+				return
+			}
+			if got.Status != test.wantStatus || changed != test.wantChange {
+				t.Fatalf("transition: got=%#v changed=%v", got, changed)
+			}
+			if test.lock && got.AuctionID == nil {
+				t.Fatal("lock transition lost auction ID")
+			}
+			if !test.lock && got.AuctionID != nil {
+				t.Fatal("unlock transition retained auction ID")
+			}
+		})
+	}
+}
+
+func TestProductServiceLockUnlockEnforcesAuctionState(t *testing.T) {
 	productID, auctionID := uuid.New(), uuid.New()
 	repository := &fakeProductRepository{products: map[uuid.UUID]Product{
 		productID: {ID: productID, SellerID: uuid.New(), Status: ProductStatusAvailable},
@@ -164,7 +231,7 @@ func TestProductServiceLockUnlockAreIdempotentByAuction(t *testing.T) {
 	if err := service.Unlock(context.Background(), productID, auctionID); err != nil {
 		t.Fatalf("first unlock: %v", err)
 	}
-	if err := service.Unlock(context.Background(), productID, auctionID); err != nil {
-		t.Fatalf("second unlock: %v", err)
+	if err := service.Unlock(context.Background(), productID, auctionID); !errors.Is(err, ErrProductLocked) {
+		t.Fatalf("second unlock error: got %v, want %v", err, ErrProductLocked)
 	}
 }
