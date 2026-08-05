@@ -209,6 +209,19 @@ services:
     networks:
       - auction
 
+  frontend:
+    build:
+      context: ../apps/frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - API_GATEWAY_URL=http://api-gateway:8080
+    depends_on:
+      - api-gateway
+    networks:
+      - auction
+
 volumes:
   kafka_data:
   postgres_data:
