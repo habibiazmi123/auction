@@ -1,1 +1,95 @@
 @import "tailwindcss";
+
+@theme {
+  --color-bg: #e8ecf1;
+  --color-surface: #e0e5ec;
+  --color-shadow-dark: #a3b1c6;
+  --color-shadow-light: #ffffff;
+  --color-primary: #6c8cd9;
+  --color-accent: #e07b5a;
+  --color-text: #3a3f47;
+  --color-text-muted: #8b93a0;
+  --color-destructive: #d9534f;
+  --color-border: #d1d7e0;
+  --color-input: #e0e5ec;
+  --color-ring: #6c8cd9;
+  --radius: 0.75rem;
+}
+
+@layer utilities {
+  .nm-surface {
+    background: #e0e5ec;
+    border-radius: 18px;
+    box-shadow: 8px 8px 16px #a3b1c6, -8px -8px 16px #ffffff;
+    border: none;
+  }
+
+  .nm-inset {
+    background: #e0e5ec;
+    border-radius: 18px;
+    box-shadow: inset 4px 4px 8px #a3b1c6, inset -4px -4px 8px #ffffff;
+    border: none;
+  }
+
+  .nm-btn {
+    background: #e0e5ec;
+    color: #3a3f47;
+    border-radius: 12px;
+    padding: 0.625rem 1.5rem;
+    font-weight: 500;
+    box-shadow: 4px 4px 8px #a3b1c6, -4px -4px 8px #ffffff;
+    transition: box-shadow 0.15s ease;
+    cursor: pointer;
+    border: none;
+  }
+
+  .nm-btn:active {
+    box-shadow: inset 4px 4px 8px #a3b1c6, inset -4px -4px 8px #ffffff;
+  }
+
+  .nm-btn-primary {
+    background: #6c8cd9;
+    color: #ffffff;
+    box-shadow: 4px 4px 8px #a3b1c6, -4px -4px 8px #ffffff;
+  }
+
+  .nm-btn-primary:active {
+    box-shadow: inset 4px 4px 8px rgba(0, 0, 0, 0.15), inset -4px -4px 8px rgba(255, 255, 255, 0.1);
+  }
+
+  .nm-input {
+    background: #e0e5ec;
+    border-radius: 12px;
+    padding: 0.625rem 1rem;
+    color: #3a3f47;
+    box-shadow: inset 4px 4px 8px #a3b1c6, inset -4px -4px 8px #ffffff;
+    border: none;
+    outline: none;
+    transition: box-shadow 0.15s ease;
+  }
+
+  .nm-input:focus {
+    box-shadow: inset 4px 4px 8px #a3b1c6, inset -4px -4px 8px #ffffff, 0 0 0 2px #6c8cd9;
+  }
+
+  .nm-card {
+    background: #e0e5ec;
+    border-radius: 18px;
+    box-shadow: 8px 8px 16px #a3b1c6, -8px -8px 16px #ffffff;
+    padding: 1.5rem;
+    border: none;
+  }
+
+  @keyframes nm-pulse {
+    0%, 100% {
+      box-shadow: inset 4px 4px 8px #a3b1c6, inset -4px -4px 8px #ffffff;
+    }
+    50% {
+      box-shadow: inset 2px 2px 4px #a3b1c6, inset -2px -2px 4px #ffffff;
+    }
+  }
+
+  .nm-pulse {
+    animation: nm-pulse 1.5s ease-in-out infinite;
+  }
+}
