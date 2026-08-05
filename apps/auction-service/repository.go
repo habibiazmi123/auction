@@ -217,6 +217,50 @@ func (r *repository) ApplyBidTx(ctx context.Context, command contracts.BidComman
 	return bidResultFrom(bid), nil
 }
 
+func (r *repository) StartDue(ctx context.Context, now time.Time) (int, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("begin start due transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	rows, err := tx.Query(ctx, `
+		WITH due AS (
+			SELECT id, version FROM auctions
+			WHERE status = 'scheduled' AND starts_at <= $1 AND ends_at > $1
+			ORDER BY id
+			FOR UPDATE SKIP LOCKED
+		)
+		UPDATE auctions a
+		SET status = 'live', version = a.version + 1, updated_at = $2
+		FROM due
+		WHERE a.id = due.id
+		RETURNING a.id`, now.UTC(), now.UTC())
+	if err != nil {
+		return 0, fmt.Errorf("query scheduled auctions: %w", err)
+	}
+
+	var started []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("scan started auction: %w", err)
+		}
+		started = append(started, id)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, fmt.Errorf("read scheduled auctions: %w", err)
+	}
+	rows.Close()
+
+	if err := tx.Commit(ctx); err != nil {
+		return len(started), fmt.Errorf("commit start due: %w", err)
+	}
+	return len(started), nil
+}
+
 func (r *repository) GetBid(ctx context.Context, bidID uuid.UUID) (Bid, error) {
 	bid, err := scanBid(r.pool.QueryRow(ctx, bidSelect+` WHERE id = $1`, bidID))
 	if errors.Is(err, pgx.ErrNoRows) {

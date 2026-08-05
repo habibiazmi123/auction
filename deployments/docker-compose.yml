@@ -87,7 +87,7 @@ services:
     ports:
       - "${API_GATEWAY_PORT:-8080}:8080"
     volumes:
-      - ../smoke-client:/var/lib/smoke-client:ro
+      - ../apps/smoke-client:/var/lib/smoke-client:ro
     depends_on:
       kafka:
         condition: service_healthy

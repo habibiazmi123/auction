@@ -102,8 +102,7 @@ type problemResponse struct {
 }
 
 type bidIngressRequest struct {
-	AmountCents    int64  `json:"amount_cents"`
-	IdempotencyKey string `json:"idempotency_key"`
+	AmountCents int64 `json:"amount_cents"`
 }
 
 type bidIngressResponse struct {
@@ -205,7 +204,8 @@ func (h *Handler) createBid(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, r, http.StatusBadRequest, "invalid_input", "amount_cents must be positive")
 		return
 	}
-	if strings.TrimSpace(input.IdempotencyKey) == "" {
+	idempotencyKey := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	if idempotencyKey == "" {
 		writeProblem(w, r, http.StatusBadRequest, "invalid_input", "idempotency_key is required")
 		return
 	}
@@ -217,7 +217,7 @@ func (h *Handler) createBid(w http.ResponseWriter, r *http.Request) {
 		AuctionID:      auctionID.String(),
 		BidderID:       principal.ID,
 		AmountCents:    input.AmountCents,
-		IdempotencyKey: input.IdempotencyKey,
+		IdempotencyKey: idempotencyKey,
 	}
 	if err := h.ingress.Publish(r.Context(), command); err != nil {
 		writeProblem(w, r, http.StatusServiceUnavailable, "kafka_unavailable", "unable to accept bid at this time")

@@ -58,7 +58,7 @@ func main() {
 		Transaction:  envOrDefault("TRANSACTION_SERVICE_URL", "http://localhost:8084"),
 		Notification: envOrDefault("NOTIFICATION_SERVICE_URL", "http://localhost:8085"),
 	}
-	smokeClientDir := envOrDefault("SMOKE_CLIENT_DIR", "./smoke-client")
+	smokeClientDir := envOrDefault("SMOKE_CLIENT_DIR", "./apps/smoke-client")
 
 	health := []observability.HealthCheck{
 		{Name: "kafka", Check: func(ctx context.Context) error { return kafka.CheckConnectivity(ctx, cfg.KafkaBrokers) }},

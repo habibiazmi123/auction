@@ -56,12 +56,19 @@ func newTestHandler(ingress BidIngress, tokens auth.TokenService) *Handler {
 	return NewHandler(ingress, tokens, nil, ServiceTargets{}, "", nil, nil)
 }
 
+func newBidRequest(t *testing.T, auctionID, body string) *http.Request {
+	t.Helper()
+	request := httptest.NewRequest(http.MethodPost, "/v1/auctions/"+auctionID+"/bids", strings.NewReader(body))
+	request.Header.Set("Idempotency-Key", "k")
+	return request
+}
+
 func TestCreateBidRequiresUUIDAuctionID(t *testing.T) {
 	ingress := &fakeBidIngress{}
 	handler := newTestHandler(ingress, &fakeTokenService{})
 
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/v1/auctions/not-a-uuid/bids", strings.NewReader(`{"amount_cents":100,"idempotency_key":"k"}`))
+	request := newBidRequest(t, "not-a-uuid", `{"amount_cents":100}`)
 	request.Header.Set("Authorization", "Bearer "+issueGatewayToken(t, "buyer", uuid.NewString()))
 	handler.ServeHTTP(recorder, request)
 
@@ -80,7 +87,7 @@ func TestCreateBidRequiresPositiveAmount(t *testing.T) {
 
 	for _, amount := range []int64{0, -1} {
 		recorder := httptest.NewRecorder()
-		request := httptest.NewRequest(http.MethodPost, "/v1/auctions/"+auctionID+"/bids", strings.NewReader(`{"amount_cents":`+stringAmount(amount)+`,"idempotency_key":"k"}`))
+		request := newBidRequest(t, auctionID, `{"amount_cents":`+stringAmount(amount)+`}`)
 		request.Header.Set("Authorization", "Bearer "+issueGatewayToken(t, "buyer", uuid.NewString()))
 		handler.ServeHTTP(recorder, request)
 		if recorder.Code != http.StatusBadRequest {
@@ -103,7 +110,7 @@ func TestCreateBidRequiresIdempotencyKey(t *testing.T) {
 	auctionID := uuid.NewString()
 
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/v1/auctions/"+auctionID+"/bids", strings.NewReader(`{"amount_cents":100,"idempotency_key":""}`))
+	request := httptest.NewRequest(http.MethodPost, "/v1/auctions/"+auctionID+"/bids", strings.NewReader(`{"amount_cents":100}`))
 	request.Header.Set("Authorization", "Bearer "+issueGatewayToken(t, "buyer", uuid.NewString()))
 	handler.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusBadRequest {
@@ -120,7 +127,7 @@ func TestCreateBidRequiresBuyerRole(t *testing.T) {
 	auctionID := uuid.NewString()
 
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/v1/auctions/"+auctionID+"/bids", strings.NewReader(`{"amount_cents":100,"idempotency_key":"k"}`))
+	request := newBidRequest(t, auctionID, `{"amount_cents":100}`)
 	request.Header.Set("Authorization", "Bearer "+issueGatewayToken(t, "seller", uuid.NewString()))
 	handler.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusForbidden {
@@ -138,7 +145,7 @@ func TestCreateBidReturnsPendingOnSuccess(t *testing.T) {
 	buyerID := uuid.NewString()
 
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/v1/auctions/"+auctionID+"/bids", strings.NewReader(`{"amount_cents":100,"idempotency_key":"k"}`))
+	request := newBidRequest(t, auctionID, `{"amount_cents":100}`)
 	request.Header.Set("Authorization", "Bearer "+issueGatewayToken(t, "buyer", buyerID))
 	handler.ServeHTTP(recorder, request)
 
@@ -166,7 +173,7 @@ func TestCreateBidReturns503WhenKafkaUnavailable(t *testing.T) {
 	auctionID := uuid.NewString()
 
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/v1/auctions/"+auctionID+"/bids", strings.NewReader(`{"amount_cents":100,"idempotency_key":"k"}`))
+	request := newBidRequest(t, auctionID, `{"amount_cents":100}`)
 	request.Header.Set("Authorization", "Bearer "+issueGatewayToken(t, "buyer", uuid.NewString()))
 	handler.ServeHTTP(recorder, request)
 
@@ -181,7 +188,7 @@ func TestCreateBidRequiresAuthentication(t *testing.T) {
 	auctionID := uuid.NewString()
 
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/v1/auctions/"+auctionID+"/bids", strings.NewReader(`{"amount_cents":100,"idempotency_key":"k"}`))
+	request := newBidRequest(t, auctionID, `{"amount_cents":100}`)
 	handler.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d", recorder.Code)
@@ -197,7 +204,7 @@ func TestCreateBidRejectsMalformedBody(t *testing.T) {
 	auctionID := uuid.NewString()
 
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/v1/auctions/"+auctionID+"/bids", strings.NewReader(`{not json}`))
+	request := newBidRequest(t, auctionID, `{not json}`)
 	request.Header.Set("Authorization", "Bearer "+issueGatewayToken(t, "buyer", uuid.NewString()))
 	handler.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusBadRequest {

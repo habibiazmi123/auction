@@ -85,6 +85,7 @@ func main() {
 	defer consumer.Close()
 
 	closer := NewAuctionCloser(repository)
+	starter := NewAuctionStarter(repository)
 
 	health := []observability.HealthCheck{
 		{Name: "postgres", Check: func(ctx context.Context) error { return pool.Ping(ctx) }},
@@ -110,6 +111,7 @@ func main() {
 			})
 		},
 		func(ctx context.Context) error { return runCloser(ctx, closer) },
+		func(ctx context.Context) error { return runStarter(ctx, starter) },
 	); err != nil {
 		slog.Error("run auction service", "error", err)
 		os.Exit(1)
@@ -126,6 +128,21 @@ func runCloser(ctx context.Context, closer AuctionCloser) error {
 		case <-ticker.C:
 			if _, err := closer.CloseDue(ctx, time.Now().UTC()); err != nil {
 				slog.Error("close due run failed", "error", err)
+			}
+		}
+	}
+}
+
+func runStarter(ctx context.Context, starter AuctionStarter) error {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+			if _, err := starter.StartDue(ctx, time.Now().UTC()); err != nil {
+				slog.Error("start due run failed", "error", err)
 			}
 		}
 	}

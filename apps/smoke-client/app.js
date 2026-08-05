@@ -100,11 +100,11 @@
   }
 
   // API --------------------------------------------------------------
-  async function api(method, path, body, retryWithRefresh = true) {
+  async function api(method, path, body, headers = {}, retryWithRefresh = true) {
     const url = API_BASE + path;
     const options = {
       method,
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...headers },
     };
     if (accessToken) {
       options.headers.Authorization = 'Bearer ' + accessToken;
@@ -399,8 +399,7 @@
     try {
       const result = await api('POST', '/auctions/' + encodeURIComponent(auctionId) + '/bids', {
         amount_cents: amountCents,
-        idempotency_key: idempotencyKey,
-      });
+      }, { 'Idempotency-Key': idempotencyKey });
       const bidId = result.bid_id;
       setStatus('Bid submitted: ' + bidId + ' (' + result.status + ')');
       logEvent('Bid ' + bidId + ' pending');

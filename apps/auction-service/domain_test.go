@@ -293,6 +293,10 @@ func (r *fakeAuctionRepository) CloseDue(_ context.Context, _ time.Time) (int, e
 	return 0, nil
 }
 
+func (r *fakeAuctionRepository) StartDue(_ context.Context, _ time.Time) (int, error) {
+	return 0, nil
+}
+
 type fakeAuctionProductClient struct {
 	snapshot    ProductSnapshot
 	lockCalls   int
@@ -349,6 +353,7 @@ func (r *memoryBidRepository) Get(_ context.Context, _ uuid.UUID) (Auction, erro
 func (r *memoryBidRepository) Update(_ context.Context, _ Auction) error { return nil }
 func (r *memoryBidRepository) GetBid(_ context.Context, _ uuid.UUID) (Bid, error) { return Bid{}, ErrAuctionNotFound }
 func (r *memoryBidRepository) CloseDue(_ context.Context, _ time.Time) (int, error) { return 0, nil }
+func (r *memoryBidRepository) StartDue(_ context.Context, _ time.Time) (int, error) { return 0, nil }
 
 func liveAuction(now time.Time, seller uuid.UUID) Auction {
 	return Auction{

@@ -119,6 +119,7 @@ type AuctionRepository interface {
 	ApplyBidTx(context.Context, contracts.BidCommand) (BidResult, error)
 	GetBid(context.Context, uuid.UUID) (Bid, error)
 	CloseDue(context.Context, time.Time) (int, error)
+	StartDue(context.Context, time.Time) (int, error)
 }
 
 type ProductClient interface {
@@ -139,6 +140,10 @@ type BidProcessor interface {
 
 type AuctionCloser interface {
 	CloseDue(context.Context, time.Time) (int, error)
+}
+
+type AuctionStarter interface {
+	StartDue(context.Context, time.Time) (int, error)
 }
 
 func BidRejectionCode(err error) string {

@@ -70,6 +70,6 @@ make down
 
 ## Troubleshooting
 
-- **WebSocket refuses to connect**: ensure `ALLOWED_ORIGINS` includes the origin you are using (`http://localhost:8080` by default). The browser cannot set the `Authorization` header on a WebSocket handshake, so the client sends the access token in the `access_token` query parameter.
+- **WebSocket refuses to connect**: ensure `ALLOWED_ORIGINS` includes the origin you are using (`http://localhost:8080` by default). The browser cannot set the `Authorization` header on a WebSocket handshake, so the smoke client sends the access token in the `access_token` query parameter. This is a smoke-client-only local workaround; do not pass access tokens in URLs in production.
 - **401 errors**: log in again. The client automatically refreshes expired access tokens when the refresh token is still valid.
 - **Pending bids never update**: if the WebSocket is disconnected, the client polls `GET /v1/bids/{bid_id}` every two seconds until the WebSocket reconnects or the bid status changes.
