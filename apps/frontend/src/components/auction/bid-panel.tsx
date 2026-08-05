@@ -13,8 +13,9 @@ interface BidPanelProps {
 }
 
 export function BidPanel({ auctionId, minimumIncrementCents, currentPriceCents, disabled }: BidPanelProps) {
-  const minBid = currentPriceCents + minimumIncrementCents;
-  const [amount, setAmount] = useState(minBid.toString());
+  const minBidCents = currentPriceCents + minimumIncrementCents;
+  const minBidDollars = (minBidCents / 100).toFixed(2);
+  const [amount, setAmount] = useState(minBidDollars);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -23,9 +24,16 @@ export function BidPanel({ auctionId, minimumIncrementCents, currentPriceCents, 
     setError("");
     setLoading(true);
 
-    const amountCents = parseInt(amount, 10);
-    if (isNaN(amountCents) || amountCents < minBid) {
-      setError(`Minimum bid is ${(minBid / 100).toFixed(2)}`);
+    const parsed = parseFloat(amount);
+    if (isNaN(parsed)) {
+      setError("Enter a valid amount");
+      setLoading(false);
+      return;
+    }
+
+    const amountCents = Math.round(parsed * 100);
+    if (amountCents < minBidCents) {
+      setError(`Minimum bid is $${minBidDollars}`);
       setLoading(false);
       return;
     }
@@ -70,7 +78,7 @@ export function BidPanel({ auctionId, minimumIncrementCents, currentPriceCents, 
           onChange={(e) => setAmount(e.target.value)}
           disabled={disabled || loading}
           className="nm-input flex-1"
-          placeholder={`Min: ${(minBid / 100).toFixed(2)}`}
+          placeholder={`Min: $${minBidDollars}`}
         />
         <Button
           type="submit"

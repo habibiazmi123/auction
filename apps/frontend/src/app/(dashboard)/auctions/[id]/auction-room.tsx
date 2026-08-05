@@ -15,6 +15,7 @@ interface AuctionRoomProps {
   isLive: boolean;
   isClosed: boolean;
   winnerId: string | null;
+  accessToken: string;
 }
 
 export function AuctionRoom({
@@ -25,19 +26,14 @@ export function AuctionRoom({
   isLive,
   isClosed,
   winnerId,
+  accessToken,
 }: AuctionRoomProps) {
   const [connected, setConnected] = useState(false);
-  const [token, setToken] = useState<string | null>(null);
 
   useEffect(() => {
-    const match = document.cookie.match(/access_token=([^;]+)/);
-    setToken(match?.[1] || null);
-  }, []);
+    if (!accessToken || !isLive) return;
 
-  useEffect(() => {
-    if (!token || !isLive) return;
-
-    wsManager.connect(auctionId, token);
+    wsManager.connect(auctionId, accessToken);
 
     const unsubConnected = wsManager.on("connected", () => setConnected(true));
     const unsubDisconnected = wsManager.on("disconnected", () => setConnected(false));
@@ -47,7 +43,7 @@ export function AuctionRoom({
       unsubDisconnected();
       wsManager.disconnect();
     };
-  }, [auctionId, token, isLive]);
+  }, [auctionId, accessToken, isLive]);
 
   const displayPrice = `$${(currentPriceCents / 100).toFixed(2)}`;
 

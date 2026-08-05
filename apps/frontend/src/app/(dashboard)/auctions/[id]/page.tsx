@@ -1,4 +1,5 @@
 import { api } from "@/lib/api";
+import { getAccessToken } from "@/lib/auth";
 import { AuctionRoom } from "./auction-room";
 
 export default async function AuctionPage({ params }: { params: Promise<{ id: string }> }) {
@@ -20,6 +21,7 @@ export default async function AuctionPage({ params }: { params: Promise<{ id: st
 
   const isLive = auction.status === "live";
   const isClosed = auction.status === "closed";
+  const accessToken = await getAccessToken();
 
   return (
     <div className="space-y-6">
@@ -39,6 +41,7 @@ export default async function AuctionPage({ params }: { params: Promise<{ id: st
         isLive={isLive}
         isClosed={isClosed}
         winnerId={auction.current_winner_id}
+        accessToken={accessToken || ""}
       />
     </div>
   );
