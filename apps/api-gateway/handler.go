@@ -10,11 +10,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/habibiazmi123/auction/apps/api-gateway/docs"
 	"github.com/habibiazmi123/auction/packages/auth"
 	"github.com/habibiazmi123/auction/packages/contracts"
 	"github.com/habibiazmi123/auction/packages/kafka"
 	"github.com/habibiazmi123/auction/packages/observability"
 	"github.com/google/uuid"
+	"github.com/swaggo/swag"
 	"nhooyr.io/websocket"
 )
 
@@ -112,6 +114,14 @@ type bidIngressResponse struct {
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet && r.URL.Path == "/swagger.json" {
+		h.serveSwaggerJSON(w, r)
+		return
+	}
+	if r.Method == http.MethodGet && r.URL.Path == "/swagger" {
+		h.serveSwaggerUI(w, r)
+		return
+	}
 	if h.smokeClient != nil && !strings.HasPrefix(r.URL.Path, "/v1/") && !strings.HasPrefix(r.URL.Path, "/health/") {
 		h.smokeClient.ServeHTTP(w, r)
 		return
@@ -399,5 +409,52 @@ func (t *timeoutTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	ctx, cancel := context.WithTimeout(req.Context(), t.timeout)
 	defer cancel()
 	return t.base.RoundTrip(req.WithContext(ctx))
+}
+
+func (h *Handler) serveSwaggerJSON(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	doc, err := swag.ReadDoc()
+	if err != nil {
+		writeProblem(w, r, http.StatusInternalServerError, "internal_error", "failed to read swagger doc")
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(doc))
+}
+
+func (h *Handler) serveSwaggerUI(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(swaggerUIHTML))
+}
+
+const swaggerUIHTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Auction API — Swagger UI</title>
+  <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css" />
+</head>
+<body>
+  <div id="swagger-ui"></div>
+  <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js" crossorigin></script>
+  <script>
+    SwaggerUIBundle({
+      url: "/swagger.json",
+      dom_id: "#swagger-ui",
+      deepLinking: true,
+      presets: [SwaggerUIBundle.presets.apis, SwaggerUIBundle.SwaggerUIStandalonePreset],
+      layout: "BaseLayout",
+    });
+  </script>
+</body>
+</html>
+`
+
+func init() {
+	docs.SwaggerInfo.Title = "Auction Platform API"
+	docs.SwaggerInfo.Version = "1.0.0"
 }
 

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 brokers="${KAFKA_BROKERS:-kafka:9092}"
-partitions="${KAFKA_TOPIC_PARTITIONS:-64}"
+partitions="${KAFKA_TOPIC_PARTITIONS:-6}"
 replication_factor="${KAFKA_TOPIC_REPLICATION_FACTOR:-1}"
 kafka_topics="${KAFKA_TOPICS_BIN:-/opt/bitnami/kafka/bin/kafka-topics.sh}"
 

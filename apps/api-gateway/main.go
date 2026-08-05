@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	_ "github.com/habibiazmi123/auction/apps/api-gateway/docs"
 	"github.com/habibiazmi123/auction/packages/auth"
 	"github.com/habibiazmi123/auction/packages/config"
 	"github.com/habibiazmi123/auction/packages/kafka"

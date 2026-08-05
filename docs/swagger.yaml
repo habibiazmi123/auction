@@ -1,0 +1,974 @@
+openapi: "3.0.3"
+info:
+  title: Auction Platform API
+  description: |
+    Real-time auction backend — REST + WebSocket microservices.
+
+    **Auth:** JWT Bearer token in `Authorization` header.
+    WebSocket endpoints also accept `?access_token=<token>` query parameter.
+  version: "1.0.0"
+  contact:
+    name: habibiazmi123
+    url: https://github.com/habibiazmi123/auction
+
+servers:
+  - url: http://localhost:8080
+    description: API Gateway (local dev)
+
+tags:
+  - name: Health
+  - name: Auth
+  - name: Products
+  - name: Auctions
+  - name: Bids
+  - name: Settlements
+  - name: Notifications
+  - name: WebSocket
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    # ── Problem / Error ──
+    Problem:
+      type: object
+      properties:
+        code:
+          type: string
+          example: invalid_input
+        message:
+          type: string
+          example: request body is not valid JSON
+        request_id:
+          type: string
+
+    # ── Auth ──
+    RegisterRequest:
+      type: object
+      required: [email, password, role]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          minLength: 8
+        role:
+          type: string
+          enum: [buyer, seller]
+
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+
+    RefreshRequest:
+      type: object
+      required: [refresh_token]
+      properties:
+        refresh_token:
+          type: string
+
+    LogoutRequest:
+      type: object
+      required: [refresh_token]
+      properties:
+        refresh_token:
+          type: string
+
+    TokenPair:
+      type: object
+      properties:
+        access_token:
+          type: string
+        refresh_token:
+          type: string
+        access_expires_at:
+          type: string
+          format: date-time
+        refresh_expires_at:
+          type: string
+          format: date-time
+
+    User:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        role:
+          type: string
+          enum: [buyer, seller, admin]
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    # ── Product ──
+    ProductCreate:
+      type: object
+      required: [name, description, quantity]
+      properties:
+        name:
+          type: string
+          minLength: 1
+        description:
+          type: string
+          minLength: 1
+        quantity:
+          type: integer
+          minimum: 1
+
+    ProductUpdate:
+      type: object
+      required: [name, description, quantity]
+      properties:
+        name:
+          type: string
+          minLength: 1
+        description:
+          type: string
+          minLength: 1
+        quantity:
+          type: integer
+          minimum: 1
+
+    Product:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        seller_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        description:
+          type: string
+        quantity:
+          type: integer
+        status:
+          type: string
+          enum: [available, locked]
+        auction_id:
+          type: string
+          format: uuid
+          nullable: true
+        version:
+          type: integer
+          format: int64
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    ProductList:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Product"
+        page:
+          type: integer
+        page_size:
+          type: integer
+        total:
+          type: integer
+          format: int64
+
+    # ── Auction ──
+    AuctionCreate:
+      type: object
+      required:
+        - product_id
+        - starting_price_cents
+        - minimum_increment_cents
+        - starts_at
+        - ends_at
+      properties:
+        product_id:
+          type: string
+          format: uuid
+        starting_price_cents:
+          type: integer
+          format: int64
+          minimum: 0
+        minimum_increment_cents:
+          type: integer
+          format: int64
+          minimum: 1
+        starts_at:
+          type: string
+          format: date-time
+          description: Must be before ends_at
+        ends_at:
+          type: string
+          format: date-time
+          description: Must be after starts_at
+        anti_sniping_window_seconds:
+          type: integer
+          format: int64
+          minimum: 0
+          default: 0
+        anti_sniping_extension_seconds:
+          type: integer
+          format: int64
+          minimum: 0
+          default: 0
+
+    Auction:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        product_id:
+          type: string
+          format: uuid
+        seller_id:
+          type: string
+          format: uuid
+        product_name:
+          type: string
+        product_description:
+          type: string
+        product_quantity:
+          type: integer
+        status:
+          type: string
+          enum: [draft, scheduled, live, closed]
+        starting_price_cents:
+          type: integer
+          format: int64
+        current_price_cents:
+          type: integer
+          format: int64
+        current_winner_id:
+          type: string
+          format: uuid
+          nullable: true
+        minimum_increment_cents:
+          type: integer
+          format: int64
+        starts_at:
+          type: string
+          format: date-time
+        ends_at:
+          type: string
+          format: date-time
+        anti_sniping_window_seconds:
+          type: integer
+          format: int64
+        anti_sniping_extension_seconds:
+          type: integer
+          format: int64
+        version:
+          type: integer
+          format: int64
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    # ── Bid ──
+    BidRequest:
+      type: object
+      required: [amount_cents]
+      properties:
+        amount_cents:
+          type: integer
+          format: int64
+          minimum: 1
+
+    BidAccepted:
+      type: object
+      properties:
+        bid_id:
+          type: string
+          format: uuid
+        auction_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          example: pending
+
+    # ── Settlement ──
+    Settlement:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        auction_id:
+          type: string
+          format: uuid
+        seller_id:
+          type: string
+          format: uuid
+        buyer_id:
+          type: string
+          format: uuid
+        bid_id:
+          type: string
+          format: uuid
+        amount_cents:
+          type: integer
+          format: int64
+        status:
+          type: string
+          enum: [pending, paid, failed]
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    # ── Notification ──
+    Notification:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        type:
+          type: string
+        auction_id:
+          type: string
+          format: uuid
+          nullable: true
+        title:
+          type: string
+        body:
+          type: string
+        read:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+
+    NotificationList:
+      type: object
+      properties:
+        notifications:
+          type: array
+          items:
+            $ref: "#/components/schemas/Notification"
+
+    # ── WebSocket Event Envelope ──
+    EventEnvelope:
+      type: object
+      properties:
+        event_id:
+          type: string
+        event_type:
+          type: string
+          examples:
+            - auction.bid.placed.v1
+            - auction.closed.v1
+            - notification.created.v1
+        version:
+          type: integer
+        occurred_at:
+          type: string
+          format: date-time
+        producer:
+          type: string
+        correlation_id:
+          type: string
+        causation_id:
+          type: string
+        payload:
+          type: object
+          description: Event-specific payload (bid result, auction close, notification)
+
+  responses:
+    400:
+      description: Invalid input
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    401:
+      description: Unauthorized — missing or invalid token
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    403:
+      description: Forbidden — insufficient role or not owner
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    404:
+      description: Not found
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    409:
+      description: Conflict
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    500:
+      description: Internal server error
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    503:
+      description: Service / dependency unavailable
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+
+security:
+  - BearerAuth: []
+
+paths:
+  # ═══════════════════════════════════════════════
+  # HEALTH
+  # ═══════════════════════════════════════════════
+  /health/live:
+    get:
+      tags: [Health]
+      summary: Liveness probe
+      security: []
+      responses:
+        "200":
+          description: Service is running
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: live
+
+  /health/ready:
+    get:
+      tags: [Health]
+      summary: Readiness probe
+      security: []
+      responses:
+        "200":
+          description: All dependencies healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ready
+        "503":
+          $ref: "#/components/responses/503"
+
+  # ═══════════════════════════════════════════════
+  # AUTH
+  # ═══════════════════════════════════════════════
+  /v1/auth/register:
+    post:
+      tags: [Auth]
+      summary: Register a new user
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterRequest"
+      responses:
+        "201":
+          description: User created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "400":
+          $ref: "#/components/responses/400"
+        "409":
+          description: Email already taken
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "500":
+          $ref: "#/components/responses/500"
+
+  /v1/auth/login:
+    post:
+      tags: [Auth]
+      summary: Login and get token pair
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: Token pair
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenPair"
+        "400":
+          $ref: "#/components/responses/400"
+        "401":
+          description: Invalid credentials
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "500":
+          $ref: "#/components/responses/500"
+
+  /v1/auth/refresh:
+    post:
+      tags: [Auth]
+      summary: Rotate refresh token (returns new token pair, revokes old)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RefreshRequest"
+      responses:
+        "200":
+          description: New token pair
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenPair"
+        "400":
+          $ref: "#/components/responses/400"
+        "401":
+          description: Invalid / expired / revoked refresh token
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "500":
+          $ref: "#/components/responses/500"
+
+  /v1/auth/logout:
+    post:
+      tags: [Auth]
+      summary: Revoke refresh token
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LogoutRequest"
+      responses:
+        "204":
+          description: Token revoked — no content
+        "400":
+          $ref: "#/components/responses/400"
+        "401":
+          description: Invalid / expired / already revoked
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "500":
+          $ref: "#/components/responses/500"
+
+  # ═══════════════════════════════════════════════
+  # PRODUCTS
+  # ═══════════════════════════════════════════════
+  /v1/products:
+    post:
+      tags: [Products]
+      summary: Create a product (seller only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProductCreate"
+      responses:
+        "201":
+          description: Product created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Product"
+        "400":
+          $ref: "#/components/responses/400"
+        "401":
+          $ref: "#/components/responses/401"
+        "403":
+          $ref: "#/components/responses/403"
+        "500":
+          $ref: "#/components/responses/500"
+
+    get:
+      tags: [Products]
+      summary: List products (paginated)
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: page_size
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        "200":
+          description: Paginated product list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProductList"
+        "400":
+          $ref: "#/components/responses/400"
+        "401":
+          $ref: "#/components/responses/401"
+        "500":
+          $ref: "#/components/responses/500"
+
+  /v1/products/{product_id}:
+    parameters:
+      - name: product_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      tags: [Products]
+      summary: Get product by ID
+      responses:
+        "200":
+          description: Product details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Product"
+        "401":
+          $ref: "#/components/responses/401"
+        "404":
+          $ref: "#/components/responses/404"
+        "500":
+          $ref: "#/components/responses/500"
+
+    put:
+      tags: [Products]
+      summary: Update product (seller who owns it)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProductUpdate"
+      responses:
+        "204":
+          description: Updated — no content
+        "400":
+          $ref: "#/components/responses/400"
+        "401":
+          $ref: "#/components/responses/401"
+        "403":
+          $ref: "#/components/responses/403"
+        "404":
+          $ref: "#/components/responses/404"
+        "409":
+          description: Product is locked by an active auction
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "500":
+          $ref: "#/components/responses/500"
+
+    patch:
+      tags: [Products]
+      summary: Update product (partial — same as PUT)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProductUpdate"
+      responses:
+        "204":
+          description: Updated — no content
+        "400":
+          $ref: "#/components/responses/400"
+        "401":
+          $ref: "#/components/responses/401"
+        "403":
+          $ref: "#/components/responses/403"
+        "404":
+          $ref: "#/components/responses/404"
+        "409":
+          description: Product is locked by an active auction
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "500":
+          $ref: "#/components/responses/500"
+
+  # ═══════════════════════════════════════════════
+  # AUCTIONS
+  # ═══════════════════════════════════════════════
+  /v1/auctions:
+    post:
+      tags: [Auctions]
+      summary: Create an auction (seller only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AuctionCreate"
+      responses:
+        "201":
+          description: "Auction created (status: scheduled)"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Auction"
+        "400":
+          $ref: "#/components/responses/400"
+        "401":
+          $ref: "#/components/responses/401"
+        "403":
+          $ref: "#/components/responses/403"
+        "409":
+          $ref: "#/components/responses/409"
+        "500":
+          $ref: "#/components/responses/500"
+        "503":
+          $ref: "#/components/responses/503"
+
+  /v1/auctions/{auction_id}:
+    parameters:
+      - name: auction_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      tags: [Auctions]
+      summary: Get auction by ID
+      responses:
+        "200":
+          description: Auction details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Auction"
+        "401":
+          $ref: "#/components/responses/401"
+        "404":
+          $ref: "#/components/responses/404"
+        "500":
+          $ref: "#/components/responses/500"
+
+  # ═══════════════════════════════════════════════
+  # BIDS
+  # ═══════════════════════════════════════════════
+  /v1/auctions/{auction_id}/bids:
+    parameters:
+      - name: auction_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    post:
+      tags: [Bids]
+      summary: Place a bid (buyer only, async — result via WebSocket)
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+          description: Deduplication key — same key = same bid result
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BidRequest"
+      responses:
+        "202":
+          description: Bid accepted for processing — check WebSocket for result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BidAccepted"
+        "400":
+          $ref: "#/components/responses/400"
+        "401":
+          $ref: "#/components/responses/401"
+        "403":
+          $ref: "#/components/responses/403"
+        "503":
+          $ref: "#/components/responses/503"
+
+  # ═══════════════════════════════════════════════
+  # SETTLEMENTS
+  # ═══════════════════════════════════════════════
+  /v1/auctions/{auction_id}/settlement:
+    parameters:
+      - name: auction_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      tags: [Settlements]
+      summary: Get settlement for a closed auction
+      responses:
+        "200":
+          description: Settlement details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Settlement"
+        "400":
+          $ref: "#/components/responses/400"
+        "401":
+          $ref: "#/components/responses/401"
+        "404":
+          $ref: "#/components/responses/404"
+        "500":
+          $ref: "#/components/responses/500"
+
+  # ═══════════════════════════════════════════════
+  # NOTIFICATIONS
+  # ═══════════════════════════════════════════════
+  /v1/notifications:
+    get:
+      tags: [Notifications]
+      summary: List current user's notifications
+      description: Returns notifications for the authenticated user (user ID from JWT).
+      responses:
+        "200":
+          description: Notification list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotificationList"
+        "400":
+          $ref: "#/components/responses/400"
+        "401":
+          $ref: "#/components/responses/401"
+        "500":
+          $ref: "#/components/responses/500"
+
+  # ═══════════════════════════════════════════════
+  # WEBSOCKET
+  # ═══════════════════════════════════════════════
+  /v1/auctions/{auction_id}/live:
+    parameters:
+      - name: auction_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: access_token
+        in: query
+        description: JWT for browser WebSocket connections (no custom headers)
+        schema:
+          type: string
+    get:
+      tags: [WebSocket]
+      summary: WebSocket — auction live events
+      description: |
+        Upgrades to WebSocket (subprotocol: `auction-live`). Receives real-time
+        auction events from `auction.events.v1` Kafka topic — bid results,
+        auction state changes, etc. as JSON `EventEnvelope` text frames.
+
+        **Limits:** max 1000 subscribers/auction, max 10 connections/user,
+        max 1 auction subscription/connection.
+        **Ping:** server sends ping every 30s with 10s pong timeout.
+      responses:
+        "101":
+          description: WebSocket upgrade — connection established
+          headers:
+            Sec-WebSocket-Protocol:
+              schema:
+                type: string
+                example: auction-live
+        "400":
+          $ref: "#/components/responses/400"
+        "401":
+          $ref: "#/components/responses/401"
+        "503":
+          description: Subscription rejected — limits exceeded
+
+  /v1/notifications/live:
+    get:
+      tags: [WebSocket]
+      summary: WebSocket — notification live events
+      description: |
+        Upgrades to WebSocket (subprotocol: `notification-live`). Receives
+        real-time notification events from `notification.events.v1` Kafka topic
+        as JSON `EventEnvelope` text frames — filtered to authenticated user.
+
+        **Limits:** max 10 connections/user, max 1 notification subscription/connection.
+        **Ping:** server sends ping every 30s with 10s pong timeout.
+      parameters:
+        - name: access_token
+          in: query
+          description: JWT for browser WebSocket connections (no custom headers)
+          schema:
+            type: string
+      responses:
+        "101":
+          description: WebSocket upgrade — connection established
+          headers:
+            Sec-WebSocket-Protocol:
+              schema:
+                type: string
+                example: notification-live
+        "401":
+          $ref: "#/components/responses/401"
+        "503":
+          description: Subscription rejected — limits exceeded or hub unavailable
