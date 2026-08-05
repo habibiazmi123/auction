@@ -11,10 +11,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/example/auction/packages/config"
-	"github.com/example/auction/packages/kafka"
-	"github.com/example/auction/packages/observability"
-	postgrespkg "github.com/example/auction/packages/postgres"
+	"github.com/habibiazmi123/auction/packages/config"
+	"github.com/habibiazmi123/auction/packages/kafka"
+	"github.com/habibiazmi123/auction/packages/observability"
+	postgrespkg "github.com/habibiazmi123/auction/packages/postgres"
 	kafkago "github.com/segmentio/kafka-go"
 )
 

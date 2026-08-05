@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/example/auction/packages/postgres"
+	"github.com/habibiazmi123/auction/packages/postgres"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )

@@ -5,7 +5,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/example/auction/packages/auth"
+	"github.com/habibiazmi123/auction/packages/auth"
 )
 
 var (

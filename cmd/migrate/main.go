@@ -8,7 +8,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/example/auction/packages/postgres"
+	"github.com/habibiazmi123/auction/packages/postgres"
 )
 
 var services = map[string]string{

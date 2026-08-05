@@ -6,8 +6,8 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/example/auction/packages/contracts"
-	"github.com/example/auction/packages/kafka"
+	"github.com/habibiazmi123/auction/packages/contracts"
+	"github.com/habibiazmi123/auction/packages/kafka"
 )
 
 type PublicEventProcessor interface {

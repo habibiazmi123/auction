@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/example/auction/packages/contracts"
-	"github.com/example/auction/packages/kafka"
+	"github.com/habibiazmi123/auction/packages/contracts"
+	"github.com/habibiazmi123/auction/packages/kafka"
 	"github.com/google/uuid"
 	"nhooyr.io/websocket"
 )

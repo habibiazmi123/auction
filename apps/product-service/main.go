@@ -12,11 +12,11 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/example/auction/packages/auth"
-	"github.com/example/auction/packages/config"
-	"github.com/example/auction/packages/kafka"
-	"github.com/example/auction/packages/observability"
-	"github.com/example/auction/packages/postgres"
+	"github.com/habibiazmi123/auction/packages/auth"
+	"github.com/habibiazmi123/auction/packages/config"
+	"github.com/habibiazmi123/auction/packages/kafka"
+	"github.com/habibiazmi123/auction/packages/observability"
+	"github.com/habibiazmi123/auction/packages/postgres"
 )
 
 func main() {

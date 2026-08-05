@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/example/auction/packages/observability"
+	"github.com/habibiazmi123/auction/packages/observability"
 	"github.com/google/uuid"
 )
 

@@ -10,8 +10,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/example/auction/packages/auth"
-	"github.com/example/auction/packages/observability"
+	"github.com/habibiazmi123/auction/packages/auth"
+	"github.com/habibiazmi123/auction/packages/observability"
 	"github.com/google/uuid"
 )
 

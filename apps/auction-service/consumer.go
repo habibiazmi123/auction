@@ -5,7 +5,7 @@ import (
 	"errors"
 	"log/slog"
 
-	"github.com/example/auction/packages/contracts"
+	"github.com/habibiazmi123/auction/packages/contracts"
 )
 
 type bidProcessor struct {

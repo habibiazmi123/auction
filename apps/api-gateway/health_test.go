@@ -8,7 +8,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/example/auction/packages/observability"
+	"github.com/habibiazmi123/auction/packages/observability"
 )
 
 func TestHealthLiveReturnsOK(t *testing.T) {

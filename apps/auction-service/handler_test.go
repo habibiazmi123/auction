@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/example/auction/packages/auth"
+	"github.com/habibiazmi123/auction/packages/auth"
 	"github.com/google/uuid"
 )
 

@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/example/auction/packages/contracts"
-	"github.com/example/auction/packages/kafka"
-	"github.com/example/auction/packages/postgres"
+	"github.com/habibiazmi123/auction/packages/contracts"
+	"github.com/habibiazmi123/auction/packages/kafka"
+	"github.com/habibiazmi123/auction/packages/postgres"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	kafkago "github.com/segmentio/kafka-go"
